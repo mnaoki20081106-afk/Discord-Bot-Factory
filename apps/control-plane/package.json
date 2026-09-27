@@ -10,6 +10,6 @@
     "db:remote": "wrangler d1 execute DB --remote --file=./schema.sql"
   },
   "devDependencies": {
-    "wrangler": "^4.45.0"
+    "wrangler": "4.142.0"
   }
 }
