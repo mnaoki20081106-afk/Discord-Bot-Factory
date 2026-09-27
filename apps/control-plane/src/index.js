@@ -391,15 +391,32 @@ function generateManagedValue(generate) {
 }
 
 async function getOrCreateManagedValue(env, repository, accountAlias, field) {
+  const generatorJson = JSON.stringify(field.generate);
   const existing = await env.DB.prepare(
-    "SELECT encrypted_value FROM managed_values WHERE repository = ? AND account_alias = ? AND field_key = ?",
+    "SELECT encrypted_value, generator_json FROM managed_values WHERE repository = ? AND account_alias = ? AND field_key = ?",
   ).bind(repository, accountAlias, field.key).first();
 
-  if (existing) return decryptValue(env, existing.encrypted_value);
+  if (existing && existing.generator_json === generatorJson) {
+    return decryptValue(env, existing.encrypted_value);
+  }
 
   const value = generateManagedValue(field.generate);
   const encrypted = await encryptValue(env, value);
   const now = nowIso();
+
+  if (existing) {
+    await env.DB.prepare(
+      `UPDATE managed_values
+       SET encrypted_value = ?, generator_json = ?, updated_at = ?
+       WHERE repository = ? AND account_alias = ? AND field_key = ?`,
+    ).bind(encrypted, generatorJson, now, repository, accountAlias, field.key).run();
+    await audit(env, "managed_value_rotated", {
+      repository,
+      account_alias: accountAlias,
+      field_key: field.key,
+    });
+    return value;
+  }
 
   await env.DB.prepare(
     `INSERT INTO managed_values(
@@ -411,7 +428,7 @@ async function getOrCreateManagedValue(env, repository, accountAlias, field) {
     accountAlias,
     field.key,
     encrypted,
-    JSON.stringify(field.generate),
+    generatorJson,
     now,
     now,
   ).run();
@@ -726,11 +743,12 @@ async function handleApi(request, env, url) {
 
       const botSecrets = {};
       for (const field of setup.fields) {
-        const value = field.generate
+        const rawValue = field.generate
           ? await getOrCreateManagedValue(env, repository, account.alias, field)
-          : validateFieldValue(field, provided[field.key]);
+          : provided[field.key];
+        const value = validateFieldValue(field, rawValue);
 
-        if (field.runtime_env && (value !== "" || field.required || field.generate)) {
+        if (field.runtime_env && value !== "") {
           botSecrets[field.key] = value;
         }
       }
