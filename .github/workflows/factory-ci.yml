@@ -7,11 +7,13 @@ on:
       - "scripts/**"
       - ".github/workflows/**"
       - "docs/**"
+      - "README.md"
   pull_request:
     paths:
       - "scripts/**"
       - ".github/workflows/**"
       - "docs/**"
+      - "README.md"
   workflow_dispatch:
 
 permissions:
@@ -44,7 +46,7 @@ jobs:
               bash -n "$file"
             done
 
-      - name: Test Worker manifest
+      - name: Test Cloudflare manifest
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
@@ -54,8 +56,9 @@ jobs:
           cat > "$tmp/bot-factory.json" <<'JSON'
           {
             "name": "Test Worker",
-            "runtime": "worker",
             "provider": "cloudflare",
+            "runtime": "worker",
+            "cloudflare_account": "guild-a",
             "working_directory": "apps/worker",
             "wrangler_config": "wrangler.jsonc",
             "d1_migrations": ["DB"]
@@ -65,29 +68,42 @@ jobs:
 
           output="$(node scripts/read-manifest.mjs "$tmp" owner/repo)"
           printf '%s\n' "$output" | grep -F 'test-worker'
-          printf '%s\n' "$output" | grep -F 'cloudflare'
+          printf '%s\n' "$output" | grep -F 'guild-a'
           printf '%s\n' "$output" | grep -F 'apps/worker'
 
-      - name: Test Node auto-detection
+      - name: Reject manifest without account assignment
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
-          printf '{"scripts":{"start":"node src/index.js"}}\n' > "$tmp/package.json"
+          printf '{}\n' > "$tmp/wrangler.jsonc"
+          printf '{"name":"missing-account","runtime":"worker","provider":"cloudflare"}\n' > "$tmp/bot-factory.json"
 
-          output="$(node scripts/read-manifest.mjs "$tmp" owner/Discord-Ticket)"
-          printf '%s\n' "$output" | grep -F 'discord-ticket'
-          printf '%s\n' "$output" | grep -F 'oracle'
-          printf '%s\n' "$output" | grep -F 'node'
+          if node scripts/read-manifest.mjs "$tmp" owner/repo >/tmp/manifest-output.txt 2>&1; then
+            echo "::error::Manifest without cloudflare_account was unexpectedly accepted."
+            exit 1
+          fi
 
-      - name: Enforce deployment-only scope
+      - name: Test Cloudflare account registry
         run: |
           set -euo pipefail
+          registry='{"guild-a":{"account_id":"0123456789abcdef0123456789abcdef","token_secret":"CLOUDFLARE_GUILD_A_API_TOKEN"}}'
+          output="$(
+            CLOUDFLARE_ACCOUNTS_JSON="$registry"               node scripts/cloudflare/resolve-account.mjs guild-a
+          )"
+
+          printf '%s\n' "$output" | grep -F '0123456789abcdef0123456789abcdef'
+          printf '%s\n' "$output" | grep -F 'CLOUDFLARE_GUILD_A_API_TOKEN'
+
+      - name: Enforce Cloudflare-only scope
+        run: |
+          set -euo pipefail
+
           test -f .github/workflows/deploy-bot.yml
           test -f scripts/cloudflare/deploy.sh
-          test -f scripts/oracle/ensure-host.sh
-          test -f scripts/oracle/deploy.sh
+          test -f scripts/cloudflare/resolve-account.mjs
 
+          test ! -e scripts/oracle
           test ! -e .github/workflows/create-bot-repository.yml
           test ! -e scripts/create-repository.sh
           test ! -e scripts/scaffold-repository.sh
