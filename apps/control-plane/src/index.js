@@ -594,6 +594,9 @@ async function handleApi(request, env, url) {
     const response = await githubFetch(token, "/user");
     if (!response.ok) return json({ error: `GitHub Tokenを確認できませんでした (${response.status})` }, 400);
     const user = await response.json();
+    if (env.ALLOWED_REPO_OWNER && user.login !== env.ALLOWED_REPO_OWNER) {
+      return json({ error: `GitHub Tokenは @${env.ALLOWED_REPO_OWNER} のものを登録してください。` }, 400);
+    }
     await setSetting(env, "github_pat", token, { login: user.login });
     await audit(env, "github_token_updated", { login: user.login });
     return json({ ok: true, login: user.login });
@@ -603,12 +606,18 @@ async function handleApi(request, env, url) {
     const github = await getSetting(env, "github_pat");
     if (!github) return json({ error: "先にGitHub Tokenを登録してください。" }, 409);
 
-    const response = await githubFetch(
-      github.value,
-      "/user/repos?per_page=100&affiliation=owner&sort=updated",
-    );
-    if (!response.ok) return json({ error: "GitHubリポジトリ一覧を取得できませんでした。" }, 502);
-    const repos = await response.json();
+    const repos = [];
+    for (let page = 1; page <= 10; page += 1) {
+      const response = await githubFetch(
+        github.value,
+        `/user/repos?per_page=100&page=${page}&affiliation=owner&sort=updated`,
+      );
+      if (!response.ok) return json({ error: "GitHubリポジトリ一覧を取得できませんでした。" }, 502);
+      const batch = await response.json();
+      repos.push(...batch);
+      if (batch.length < 100) break;
+    }
+
     const filtered = repos
       .filter((repo) => !env.ALLOWED_REPO_OWNER || repo.owner?.login === env.ALLOWED_REPO_OWNER)
       .map((repo) => ({
@@ -687,6 +696,16 @@ async function handleApi(request, env, url) {
   const accountDelete = url.pathname.match(/^\/api\/cloudflare\/accounts\/([^/]+)$/);
   if (accountDelete && request.method === "DELETE") {
     const alias = decodeURIComponent(accountDelete[1]);
+    const active = await env.DB.prepare(
+      `SELECT COUNT(*) AS count
+       FROM deployments
+       WHERE account_alias = ? AND status IN ('queued', 'dispatched', 'running')`,
+    ).bind(alias).first();
+
+    if (Number(active?.count || 0) > 0) {
+      return json({ error: "このCloudflare Accountを使ったBOT起動処理が進行中です。" }, 409);
+    }
+
     await env.DB.batch([
       env.DB.prepare("DELETE FROM managed_values WHERE account_alias = ?").bind(alias),
       env.DB.prepare("DELETE FROM cloudflare_accounts WHERE alias = ?").bind(alias),
