@@ -793,9 +793,22 @@ async function handleApi(request, env, url) {
         workflowRunUrl = String(result.html_url || "");
       }
 
-      await env.DB.prepare(
-        "UPDATE deployments SET status = 'dispatched', workflow_run_id = ?, workflow_run_url = ? WHERE id = ?",
-      ).bind(workflowRunId, workflowRunUrl, id).run();
+      if (workflowRunId) {
+        await env.DB.prepare(
+          `UPDATE deployments
+           SET status = 'dispatched', workflow_run_id = ?, workflow_run_url = ?
+           WHERE id = ? AND status = 'queued'`,
+        ).bind(workflowRunId, workflowRunUrl, id).run();
+      } else {
+        await env.DB.prepare(
+          "UPDATE deployments SET status = 'dispatched' WHERE id = ? AND status = 'queued'",
+        ).bind(id).run();
+      }
+
+      const currentDeployment = await env.DB.prepare(
+        "SELECT id, status, workflow_run_id, workflow_run_url FROM deployments WHERE id = ?",
+      ).bind(id).first();
+
       await audit(env, "deployment_dispatched", {
         id,
         repository,
@@ -804,7 +817,7 @@ async function handleApi(request, env, url) {
 
       return json({
         ok: true,
-        deployment: {
+        deployment: currentDeployment || {
           id,
           status: "dispatched",
           workflow_run_id: workflowRunId,
