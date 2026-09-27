@@ -17,9 +17,7 @@ function sanitizeName(value) {
 }
 
 if (!fs.existsSync(manifestPath)) {
-  throw new Error(
-    "bot-factory.json is required. Factory is Cloudflare multi-account only, so cloudflare_account must be explicit.",
-  );
+  throw new Error("bot-factory.json is required.");
 }
 
 let config;
@@ -40,14 +38,6 @@ if (config.runtime && config.runtime !== "worker") {
   throw new Error("Discord-Bot-Factory supports Cloudflare Worker runtime only.");
 }
 
-const cloudflareAccount = String(config.cloudflare_account || "").trim();
-if (!cloudflareAccount) {
-  throw new Error("bot-factory.json must define cloudflare_account.");
-}
-if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(cloudflareAccount)) {
-  throw new Error("cloudflare_account must use lowercase letters, numbers, hyphen, or underscore.");
-}
-
 const name = sanitizeName(config.name || repoName.replace(/^.*\//, ""));
 const workingDirectory = String(config.working_directory || ".").trim();
 const workdir = path.resolve(sourceRoot, workingDirectory);
@@ -64,13 +54,11 @@ if (wranglerConfig === "auto") {
   const candidates = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].filter((file) =>
     fs.existsSync(path.join(workdir, file)),
   );
-
   if (candidates.length !== 1) {
     throw new Error(
       "Cloudflare deployment requires exactly one Wrangler config in working_directory, or wrangler_config must be set explicitly.",
     );
   }
-
   wranglerConfig = candidates[0];
 }
 
@@ -91,7 +79,6 @@ const result = {
   name,
   runtime: "worker",
   provider: "cloudflare",
-  cloudflare_account: cloudflareAccount,
   working_directory: workingDirectory,
   wrangler_config: wranglerConfig,
   health_url: String(config.health_url || "").trim(),
