@@ -98,7 +98,7 @@ Each checklist item can contain:
 - `label`: text shown to the operator.
 - `required`: default true.
 - `description`: why the setting is required.
-- `path`: where to enable/configure it.
+- `path`: where to enable/configure it.\n- `url`: optional direct link shown as 「設定画面を開く」.
 
 Example:
 
