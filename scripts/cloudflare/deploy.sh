@@ -7,6 +7,7 @@ BOT_NAME="${3:?bot name required}"
 WRANGLER_CONFIG="${4:?wrangler config required}"
 HEALTH_URL="${5:-}"
 D1_MIGRATIONS_JSON="${6:-[]}"
+FACTORY_WRANGLER_VERSION="${FACTORY_WRANGLER_VERSION:-4.142.0}"
 
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
 : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
@@ -47,6 +48,10 @@ fi
 
 cd "$WORKDIR"
 
+run_wrangler() {
+  npx --yes "wrangler@$FACTORY_WRANGLER_VERSION" "$@"
+}
+
 # The Factory registry is the single source of truth for account routing.
 # Reject a hard-coded account_id so a stale Wrangler config cannot send a bot
 # to a different Cloudflare account than bot-factory.json requested.
@@ -63,7 +68,7 @@ else
 fi
 
 echo "Deploying $BOT_NAME to Cloudflare account $CLOUDFLARE_ACCOUNT_ID..."
-npx wrangler deploy   --config "$WRANGLER_CONFIG"   --name "$BOT_NAME"   "${SECRET_ARGS[@]}"
+run_wrangler deploy   --config "$WRANGLER_CONFIG"   --name "$BOT_NAME"   "${SECRET_ARGS[@]}"
 
 if [[ -n "${BOT_SECRET_DELETE_KEYS:-}" ]]; then
   DELETE_SECRET_FILE="$(mktemp)"
@@ -91,7 +96,7 @@ NODE
 
   if [[ "$delete_count" -gt 0 ]]; then
     echo "Removing $delete_count stale Factory-managed Worker secret(s)..."
-    npx wrangler secret bulk "$DELETE_SECRET_FILE" --config "$WRANGLER_CONFIG" --name "$BOT_NAME"
+    run_wrangler secret bulk "$DELETE_SECRET_FILE" --config "$WRANGLER_CONFIG" --name "$BOT_NAME"
   fi
 fi
 
@@ -106,7 +111,7 @@ mapfile -t D1_BINDINGS < <(
 for binding in "${D1_BINDINGS[@]}"; do
   [[ -n "$binding" ]] || continue
   echo "Applying D1 migrations for binding $binding..."
-  npx wrangler d1 migrations apply "$binding"     --remote     --config "$WRANGLER_CONFIG"
+  run_wrangler d1 migrations apply "$binding"     --remote     --config "$WRANGLER_CONFIG"
 done
 
 if [[ -n "$HEALTH_URL" ]]; then
