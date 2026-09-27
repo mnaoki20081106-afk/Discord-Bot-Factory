@@ -135,9 +135,14 @@ async function decryptValue(env, packed) {
 }
 
 async function audit(env, action, detail = {}) {
-  await env.DB.prepare(
-    "INSERT INTO audit_log(action, detail_json, created_at) VALUES(?, ?, ?)",
-  ).bind(action, JSON.stringify(detail), nowIso()).run();
+  try {
+    await env.DB.prepare(
+      "INSERT INTO audit_log(action, detail_json, created_at) VALUES(?, ?, ?)",
+    ).bind(action, JSON.stringify(detail), nowIso()).run();
+  } catch (error) {
+    // Audit logging must never make a successful control-plane operation fail.
+    console.error("audit log write failed", action, error?.message || error);
+  }
 }
 
 async function getSetting(env, key) {
