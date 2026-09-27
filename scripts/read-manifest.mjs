@@ -11,90 +11,91 @@ function sanitizeName(value) {
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 63);
-  if (!name) throw new Error("Could not derive a valid bot name.");
+
+  if (!name) throw new Error("Could not derive a valid Worker name.");
   return name;
 }
 
-function findFiles(dir, names, depth = 0) {
-  if (depth > 3) return [];
-  const out = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if ([".git", "node_modules", "dist", "build", ".wrangler"].includes(entry.name)) continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isFile() && names.includes(entry.name)) out.push(full);
-    if (entry.isDirectory()) out.push(...findFiles(full, names, depth + 1));
-  }
-  return out;
+if (!fs.existsSync(manifestPath)) {
+  throw new Error(
+    "bot-factory.json is required. Factory is Cloudflare multi-account only, so cloudflare_account must be explicit.",
+  );
 }
 
-let config = {};
-
-if (fs.existsSync(manifestPath)) {
+let config;
+try {
   config = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-} else {
-  const wranglers = findFiles(sourceRoot, ["wrangler.jsonc", "wrangler.json", "wrangler.toml"]);
-  if (wranglers.length > 1) {
-    throw new Error("Multiple Wrangler configs found. Add bot-factory.json to choose the deployment target.");
-  }
-
-  if (wranglers.length === 1) {
-    config.runtime = "worker";
-    config.provider = "cloudflare";
-    config.working_directory = path.relative(sourceRoot, path.dirname(wranglers[0])) || ".";
-    config.wrangler_config = path.basename(wranglers[0]);
-  } else {
-    const dockerfiles = findFiles(sourceRoot, ["Dockerfile"]);
-    const packages = findFiles(sourceRoot, ["package.json"]);
-    const roots = [...dockerfiles, ...packages]
-      .map((file) => path.dirname(file))
-      .filter((value, index, arr) => arr.indexOf(value) === index);
-
-    if (roots.length !== 1) {
-      throw new Error(
-        roots.length === 0
-          ? "No deployable Worker/Node project detected. Add bot-factory.json."
-          : "Multiple Node project roots found. Add bot-factory.json to choose one.",
-      );
-    }
-
-    config.runtime = "node";
-    config.provider = "oracle";
-    config.working_directory = path.relative(sourceRoot, roots[0]) || ".";
-  }
+} catch {
+  throw new Error("bot-factory.json is not valid JSON.");
 }
 
-const runtime = config.runtime || "auto";
-const provider = config.provider || (runtime === "worker" ? "cloudflare" : runtime === "node" ? "oracle" : "auto");
+if (!config || Array.isArray(config) || typeof config !== "object") {
+  throw new Error("bot-factory.json must contain a JSON object.");
+}
+
+if (config.provider && config.provider !== "cloudflare") {
+  throw new Error("Discord-Bot-Factory supports Cloudflare only.");
+}
+if (config.runtime && config.runtime !== "worker") {
+  throw new Error("Discord-Bot-Factory supports Cloudflare Worker runtime only.");
+}
+
+const cloudflareAccount = String(config.cloudflare_account || "").trim();
+if (!cloudflareAccount) {
+  throw new Error("bot-factory.json must define cloudflare_account.");
+}
+if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(cloudflareAccount)) {
+  throw new Error("cloudflare_account must use lowercase letters, numbers, hyphen, or underscore.");
+}
+
 const name = sanitizeName(config.name || repoName.replace(/^.*\//, ""));
-const workingDirectory = config.working_directory || ".";
+const workingDirectory = String(config.working_directory || ".").trim();
 const workdir = path.resolve(sourceRoot, workingDirectory);
 
-if (!fs.existsSync(workdir)) throw new Error(`working_directory does not exist: ${workingDirectory}`);
-if (!["worker", "node"].includes(runtime)) throw new Error(`Unsupported runtime: ${runtime}`);
-if (!["cloudflare", "oracle"].includes(provider)) throw new Error(`Unsupported provider: ${provider}`);
-if (runtime === "worker" && provider !== "cloudflare") throw new Error("Worker runtime currently requires provider=cloudflare.");
-if (runtime === "node" && provider !== "oracle") throw new Error("Node runtime currently requires provider=oracle.");
+if (!workdir.startsWith(sourceRoot + path.sep) && workdir !== sourceRoot) {
+  throw new Error("working_directory must stay inside the source repository.");
+}
+if (!fs.existsSync(workdir) || !fs.statSync(workdir).isDirectory()) {
+  throw new Error(`working_directory does not exist: ${workingDirectory}`);
+}
 
-let wranglerConfig = config.wrangler_config || "auto";
-if (runtime === "worker" && wranglerConfig === "auto") {
+let wranglerConfig = String(config.wrangler_config || "auto").trim();
+if (wranglerConfig === "auto") {
   const candidates = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].filter((file) =>
     fs.existsSync(path.join(workdir, file)),
   );
+
   if (candidates.length !== 1) {
-    throw new Error("Worker deployment requires exactly one Wrangler config in working_directory.");
+    throw new Error(
+      "Cloudflare deployment requires exactly one Wrangler config in working_directory, or wrangler_config must be set explicitly.",
+    );
   }
+
   wranglerConfig = candidates[0];
+}
+
+const wranglerPath = path.resolve(workdir, wranglerConfig);
+if (!wranglerPath.startsWith(workdir + path.sep) && wranglerPath !== workdir) {
+  throw new Error("wrangler_config must stay inside working_directory.");
+}
+if (!fs.existsSync(wranglerPath)) {
+  throw new Error(`Wrangler config does not exist: ${wranglerConfig}`);
+}
+
+const d1Migrations = config.d1_migrations ?? [];
+if (!Array.isArray(d1Migrations) || d1Migrations.some((value) => typeof value !== "string" || !value.trim())) {
+  throw new Error("d1_migrations must be an array of non-empty binding names.");
 }
 
 const result = {
   name,
-  runtime,
-  provider,
+  runtime: "worker",
+  provider: "cloudflare",
+  cloudflare_account: cloudflareAccount,
   working_directory: workingDirectory,
   wrangler_config: wranglerConfig,
-  health_url: config.health_url || "",
-  start_command: config.start_command || "",
-  d1_migrations: Array.isArray(config.d1_migrations) ? config.d1_migrations : [],
+  health_url: String(config.health_url || "").trim(),
+  d1_migrations: d1Migrations,
 };
 
 for (const [key, value] of Object.entries(result)) {
