@@ -63,7 +63,7 @@ function renderAccounts() {
   clear($("accountSelect"));
   $("accountSelect").append(option("", "選択してください"));
   for (const account of state.accounts) {
-    $("accountSelect").append(option(account.alias, account.label + " — " + account.alias));
+    $("accountSelect").append(option(account.alias, account.label));
   }
 
   clear($("accountList"));
@@ -75,7 +75,7 @@ function renderAccounts() {
     const row = element("div", "list-item");
     const info = element("div");
     info.append(element("strong", "", account.label));
-    info.append(element("small", "", account.alias + " · " + account.account_id));
+    info.append(element("small", "", account.account_id));
     const button = element("button", "danger", "削除");
     button.dataset.deleteAccount = account.alias;
     row.append(info, button);
@@ -282,7 +282,7 @@ async function loadHistory() {
     const item = element("div", "list-item");
     const info = element("div");
     info.append(element("strong", "", row.worker_name));
-    info.append(element("small", "", row.repository + " · " + row.account_alias + " · " + new Date(row.created_at).toLocaleString("ja-JP")));
+    info.append(element("small", "", row.repository + " · " + row.account_label + " · " + new Date(row.created_at).toLocaleString("ja-JP")));
 
     const right = element("div");
     right.append(element("span", "status " + row.status, row.conclusion || row.status));
@@ -357,7 +357,6 @@ $("accountForm").addEventListener("submit", async (event) => {
       method: "POST",
       body: JSON.stringify({
         label: $("accountLabel").value,
-        alias: $("accountAlias").value,
         account_id: $("accountId").value,
         api_token: $("accountToken").value,
       }),
@@ -373,7 +372,8 @@ $("accountForm").addEventListener("submit", async (event) => {
 $("accountList").addEventListener("click", async (event) => {
   const alias = event.target && event.target.dataset ? event.target.dataset.deleteAccount : "";
   if (!alias) return;
-  if (!confirm(alias + " を削除しますか？")) return;
+  const account = state.accounts.find((item) => item.alias === alias);
+  if (!confirm((account?.label || "このCloudflare Account") + " を削除しますか？")) return;
   await api("/api/cloudflare/accounts/" + encodeURIComponent(alias), { method: "DELETE", body: "{}" });
   await loadAccounts();
 });
