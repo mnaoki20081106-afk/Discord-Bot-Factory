@@ -460,12 +460,19 @@ async function handleInternal(request, env, url) {
       return json({ error: "job expired" }, 410);
     }
 
+    const workflowRunId = String(request.headers.get("x-factory-run-id") || "").trim();
+    const workflowRunUrl = String(request.headers.get("x-factory-run-url") || "").trim();
+    if (!/^\d+$/.test(workflowRunId)) return json({ error: "invalid workflow run id" }, 400);
+    if (!workflowRunUrl.startsWith("https://github.com/")) return json({ error: "invalid workflow run url" }, 400);
+
     const payload = JSON.parse(await decryptValue(env, row.encrypted_payload));
     const claimed = await env.DB.prepare(
-      "UPDATE deployments SET status = 'running', claimed_at = ? WHERE id = ? AND claimed_at IS NULL",
-    ).bind(nowIso(), claim[1]).run();
+      \`UPDATE deployments
+       SET status = 'running', claimed_at = ?, workflow_run_id = ?, workflow_run_url = ?
+       WHERE id = ? AND claimed_at IS NULL\`,
+    ).bind(nowIso(), workflowRunId, workflowRunUrl, claim[1]).run();
     if (!Number(claimed.meta?.changes || 0)) return json({ error: "job already claimed" }, 409);
-    await audit(env, "deployment_claimed", { id: claim[1] });
+    await audit(env, "deployment_claimed", { id: claim[1], workflow_run_id: workflowRunId });
     return json(payload);
   }
 
@@ -476,9 +483,18 @@ async function handleInternal(request, env, url) {
     const status = conclusion === "success" ? "completed" : "failed";
     const workflowRunId = String(body.workflow_run_id || "").slice(0, 40);
     const workflowRunUrl = String(body.workflow_run_url || "").slice(0, 500);
-    await env.DB.prepare(
-      "UPDATE deployments SET status = ?, conclusion = ?, completed_at = ?, workflow_run_id = ?, workflow_run_url = ? WHERE id = ?",
-    ).bind(status, conclusion, nowIso(), workflowRunId, workflowRunUrl, result[1]).run();
+    if (!/^\d+$/.test(workflowRunId)) return json({ error: "invalid workflow run id" }, 400);
+
+    const updated = await env.DB.prepare(
+      \`UPDATE deployments
+       SET status = ?, conclusion = ?, completed_at = ?, workflow_run_url = ?
+       WHERE id = ? AND workflow_run_id = ? AND status = 'running'\`,
+    ).bind(status, conclusion, nowIso(), workflowRunUrl, result[1], workflowRunId).run();
+
+    if (!Number(updated.meta?.changes || 0)) {
+      return json({ ok: true, ignored: true });
+    }
+
     await audit(env, "deployment_result", { id: result[1], conclusion, workflow_run_id: workflowRunId });
     return json({ ok: true });
   }
