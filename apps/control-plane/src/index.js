@@ -900,6 +900,10 @@ async function handleApi(request, env, url) {
       }
 
       const currentSecretKeys = Object.keys(botSecrets).sort();
+      if (currentSecretKeys.length > 100) {
+        throw new Error("Cloudflare Worker Secretは1回のデプロイで100個までです。bot-factory.jsonのruntime_env項目を減らしてください。");
+      }
+
       const previousSecretState = await env.DB.prepare(
         "SELECT secret_keys_json FROM worker_secret_state WHERE account_alias = ? AND worker_name = ?",
       ).bind(account.alias, workerName).first();
