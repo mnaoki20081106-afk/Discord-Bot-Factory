@@ -822,14 +822,26 @@ async function handleApi(request, env, url) {
 }
 
 async function cleanupExpiredDeployments(env) {
-  const result = await env.DB.prepare(
+  const now = nowIso();
+  const staleRunningBefore = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+  const expired = await env.DB.prepare(
     `UPDATE deployments
      SET status = 'expired', conclusion = 'expired'
      WHERE claimed_at IS NULL
        AND status IN ('queued', 'dispatched')
        AND expires_at < ?`,
-  ).bind(nowIso()).run();
-  return Number(result.meta?.changes || 0);
+  ).bind(now).run();
+
+  const stalled = await env.DB.prepare(
+    `UPDATE deployments
+     SET status = 'failed', conclusion = 'runner_timeout', completed_at = ?
+     WHERE status = 'running'
+       AND claimed_at IS NOT NULL
+       AND claimed_at < ?`,
+  ).bind(now, staleRunningBefore).run();
+
+  return Number(expired.meta?.changes || 0) + Number(stalled.meta?.changes || 0);
 }
 export default {
   async fetch(request, env) {
