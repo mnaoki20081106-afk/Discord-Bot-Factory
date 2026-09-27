@@ -59,7 +59,11 @@ jobs:
         working-directory: apps/control-plane
         run: |
           set -euo pipefail
-          npm install
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
           npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/control-plane-dist"
 
       - name: Validate D1 schema locally
