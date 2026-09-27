@@ -64,3 +64,10 @@ Factory refuses deployment when:
 - the Wrangler config cannot be resolved safely.
 
 Factory does not automatically move a bot between Cloudflare accounts.
+
+
+## Wrangler account_id
+
+Do not put `account_id` in the Wrangler config for Factory-managed bots.
+
+The selected `cloudflare_account` alias is resolved by Factory and exported as `CLOUDFLARE_ACCOUNT_ID`. A hard-coded Wrangler `account_id` is rejected to prevent accidental cross-account deployment.
