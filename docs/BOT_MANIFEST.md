@@ -47,6 +47,18 @@ Each field can contain:
 - `pattern`: optional JavaScript regular-expression pattern.
 - `options`: values for a `select` field.
 - `runtime_env`: set false if the input is only a setup-time value and should not be passed as a Worker secret.
+- `source`: optional acquisition guide shown directly under the input.
+  - `title`: guide title.
+  - `steps`: ordered instructions.
+  - `url`: optional settings page link.
+  - `link_label`: optional link text.
+- `generate`: omit the input and let Factory generate, encrypt, store, and reuse the value.
+  - `strategy`: `hex`, `base64`, `base64url`, or `uuid`.
+  - `bytes`: 16–128 for non-UUID strategies. Default 32.
+
+Factory-managed random values are persisted per **bot repository + selected Cloudflare account + field key**. Redeploying the same bot to the same account reuses the same value instead of rotating it unexpectedly.
+
+A ready-to-copy Discord field template is available at `docs/DISCORD_SETUP_TEMPLATE.json`.
 
 Example:
 
