@@ -14,6 +14,17 @@ CREATE TABLE IF NOT EXISTS cloudflare_accounts (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS managed_values (
+  repository TEXT NOT NULL,
+  account_alias TEXT NOT NULL,
+  field_key TEXT NOT NULL,
+  encrypted_value TEXT NOT NULL,
+  generator_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(repository, account_alias, field_key)
+);
+
 CREATE TABLE IF NOT EXISTS deployments (
   id TEXT PRIMARY KEY,
   repository TEXT NOT NULL,
