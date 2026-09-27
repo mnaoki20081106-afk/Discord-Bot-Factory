@@ -5,12 +5,14 @@ on:
     branches: ["main"]
     paths:
       - "scripts/**"
+      - "apps/control-plane/**"
       - ".github/workflows/**"
       - "docs/**"
       - "README.md"
   pull_request:
     paths:
       - "scripts/**"
+      - "apps/control-plane/**"
       - ".github/workflows/**"
       - "docs/**"
       - "README.md"
@@ -30,13 +32,14 @@ jobs:
         with:
           node-version: 22
 
-      - name: Check Node scripts
+      - name: Check JavaScript syntax
         run: |
           set -euo pipefail
-          find scripts -type f -name '*.mjs' -print0 |
-            while IFS= read -r -d '' file; do
-              node --check "$file"
-            done
+          node --check scripts/read-manifest.mjs
+          node --check scripts/validate-secret-bundle.mjs
+          node --check scripts/claim-job.mjs
+          node --check apps/control-plane/src/index.js
+          node --check apps/control-plane/public/app.js
 
       - name: Check shell scripts
         run: |
@@ -46,7 +49,7 @@ jobs:
               bash -n "$file"
             done
 
-      - name: Test Cloudflare manifest
+      - name: Test Worker manifest
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
@@ -58,52 +61,69 @@ jobs:
             "name": "Test Worker",
             "provider": "cloudflare",
             "runtime": "worker",
-            "cloudflare_account": "guild-a",
             "working_directory": "apps/worker",
             "wrangler_config": "wrangler.jsonc",
-            "d1_migrations": ["DB"]
+            "d1_migrations": ["DB"],
+            "setup": {
+              "fields": [
+                {
+                  "key": "DISCORD_BOT_TOKEN",
+                  "label": "BOT Token",
+                  "type": "secret",
+                  "required": true
+                }
+              ],
+              "discord": {
+                "intents": [
+                  {
+                    "id": "members",
+                    "label": "Server Members Intent",
+                    "required": true
+                  }
+                ]
+              }
+            }
           }
           JSON
           printf '{}\n' > "$tmp/apps/worker/wrangler.jsonc"
 
           output="$(node scripts/read-manifest.mjs "$tmp" owner/repo)"
           printf '%s\n' "$output" | grep -F 'test-worker'
-          printf '%s\n' "$output" | grep -F 'guild-a'
           printf '%s\n' "$output" | grep -F 'apps/worker'
+          printf '%s\n' "$output" | grep -F 'wrangler.jsonc'
 
-      - name: Reject manifest without account assignment
+      - name: Reject non-Cloudflare manifest
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
           printf '{}\n' > "$tmp/wrangler.jsonc"
-          printf '{"name":"missing-account","runtime":"worker","provider":"cloudflare"}\n' > "$tmp/bot-factory.json"
+          printf '{"name":"bad","runtime":"node","provider":"oracle"}\n' > "$tmp/bot-factory.json"
 
           if node scripts/read-manifest.mjs "$tmp" owner/repo >/tmp/manifest-output.txt 2>&1; then
-            echo "::error::Manifest without cloudflare_account was unexpectedly accepted."
+            echo "::error::Non-Cloudflare manifest was unexpectedly accepted."
             exit 1
           fi
 
-      - name: Test Cloudflare account registry
+      - name: Validate Control Plane schema
         run: |
           set -euo pipefail
-          registry='{"guild-a":{"account_id":"0123456789abcdef0123456789abcdef","token_secret":"CLOUDFLARE_GUILD_A_API_TOKEN"}}'
-          output="$(
-            CLOUDFLARE_ACCOUNTS_JSON="$registry"               node scripts/cloudflare/resolve-account.mjs guild-a
-          )"
+          grep -F 'CREATE TABLE IF NOT EXISTS cloudflare_accounts' apps/control-plane/schema.sql
+          grep -F 'CREATE TABLE IF NOT EXISTS deployments' apps/control-plane/schema.sql
+          grep -F 'CREATE TABLE IF NOT EXISTS settings' apps/control-plane/schema.sql
 
-          printf '%s\n' "$output" | grep -F '0123456789abcdef0123456789abcdef'
-          printf '%s\n' "$output" | grep -F 'CLOUDFLARE_GUILD_A_API_TOKEN'
-
-      - name: Enforce Cloudflare-only scope
+      - name: Enforce site-managed account routing
         run: |
           set -euo pipefail
 
           test -f .github/workflows/deploy-bot.yml
           test -f scripts/cloudflare/deploy.sh
-          test -f scripts/cloudflare/resolve-account.mjs
+          test -f scripts/claim-job.mjs
+          test -f apps/control-plane/src/index.js
+          test -f apps/control-plane/public/index.html
 
           test ! -e scripts/oracle
+          test ! -e scripts/cloudflare/resolve-account.mjs
           test ! -e .github/workflows/create-bot-repository.yml
           test ! -e scripts/create-repository.sh
           test ! -e scripts/scaffold-repository.sh
