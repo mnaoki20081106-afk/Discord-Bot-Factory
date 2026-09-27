@@ -217,10 +217,26 @@ async function fetchManifest(env, token, repository, ref = "main") {
   return manifest;
 }
 
+function normalizeHttpUrl(value, label) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(`${label} のURLが不正です。`);
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error(`${label} のURLはhttp/httpsのみ使用できます。`);
+  }
+  return parsed.toString();
+}
+
 function normalizeSetup(manifest) {
   const setup = manifest.setup && typeof manifest.setup === "object" ? manifest.setup : {};
   const fields = Array.isArray(setup.fields) ? setup.fields : [];
   const discord = setup.discord && typeof setup.discord === "object" ? setup.discord : {};
+  const seenFieldKeys = new Set();
 
   const normalizedFields = fields.map((field) => {
     if (!field || typeof field !== "object") throw new Error("setup.fields に不正な項目があります。");
@@ -228,6 +244,8 @@ function normalizeSetup(manifest) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(key)) {
       throw new Error(`入力項目 key "${key}" は環境変数形式(A-Z, 0-9, _)にしてください。`);
     }
+    if (seenFieldKeys.has(key)) throw new Error(`入力項目 key "${key}" が重複しています。`);
+    seenFieldKeys.add(key);
     const type = String(field.type || "text");
     if (!["text", "secret", "number", "url", "select", "boolean"].includes(type)) {
       throw new Error(`入力項目 ${key} のtypeが未対応です。`);
@@ -237,6 +255,9 @@ function normalizeSetup(manifest) {
     let generate = null;
 
     if (generator) {
+      if (!["text", "secret"].includes(type)) {
+        throw new Error(`入力項目 ${key} の自動生成はtext/secret型のみ使用できます。`);
+      }
       const strategy = String(generator.strategy || "hex");
       if (!["hex", "base64", "base64url", "uuid"].includes(strategy)) {
         throw new Error(`入力項目 ${key} のgenerate.strategyが未対応です。`);
@@ -261,7 +282,7 @@ function normalizeSetup(manifest) {
       source: {
         title: String(source.title || "取得方法"),
         steps: Array.isArray(source.steps) ? source.steps.map(String) : [],
-        url: String(source.url || ""),
+        url: normalizeHttpUrl(source.url, `入力項目 ${key}`),
         link_label: String(source.link_label || "設定画面を開く ↗"),
       },
       generate,
@@ -280,9 +301,20 @@ function normalizeSetup(manifest) {
         required: item.required !== false,
         description: String(item.description || item.reason || ""),
         path: String(item.path || ""),
-        url: String(item.url || ""),
+        url: normalizeHttpUrl(item.url, `Discord設定 ${item.label || item.name || id}`),
       };
     });
+  }
+
+  const intents = normalizeRequirements(discord.intents, "intent");
+  const permissions = normalizeRequirements(discord.permissions, "permission");
+  const checks = normalizeRequirements(discord.checks, "check");
+  const requirementIds = new Set();
+
+  for (const item of [...intents, ...permissions, ...checks]) {
+    if (!item.id) throw new Error("Discord設定のidは空にできません。");
+    if (requirementIds.has(item.id)) throw new Error(`Discord設定 id "${item.id}" が重複しています。`);
+    requirementIds.add(item.id);
   }
 
   return {
@@ -290,9 +322,9 @@ function normalizeSetup(manifest) {
     description: String(setup.description || ""),
     fields: normalizedFields,
     discord: {
-      intents: normalizeRequirements(discord.intents, "intent"),
-      permissions: normalizeRequirements(discord.permissions, "permission"),
-      checks: normalizeRequirements(discord.checks, "check"),
+      intents,
+      permissions,
+      checks,
       notes: Array.isArray(discord.notes) ? discord.notes.map(String) : [],
     },
   };
