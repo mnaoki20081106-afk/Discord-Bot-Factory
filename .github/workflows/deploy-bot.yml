@@ -1,0 +1,213 @@
+name: Deploy Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: "Existing bot repository (owner/repo)"
+        required: true
+        type: string
+      source_ref:
+        description: "Branch to deploy"
+        required: true
+        default: "main"
+        type: string
+      secret_bundle_name:
+        description: "Factory secret containing bot runtime secrets as JSON"
+        required: false
+        default: ""
+        type: string
+      confirm:
+        description: "Type DEPLOY"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bot-factory-${{ inputs.source_repository }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: ${{ inputs.confirm == 'DEPLOY' }}
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.manifest.outputs.name }}
+      runtime: ${{ steps.manifest.outputs.runtime }}
+      provider: ${{ steps.manifest.outputs.provider }}
+      working_directory: ${{ steps.manifest.outputs.working_directory }}
+      wrangler_config: ${{ steps.manifest.outputs.wrangler_config }}
+      health_url: ${{ steps.manifest.outputs.health_url }}
+      start_command: ${{ steps.manifest.outputs.start_command }}
+      d1_migrations: ${{ steps.manifest.outputs.d1_migrations }}
+
+    steps:
+      - name: Require GitHub source token
+        env:
+          FACTORY_GITHUB_PAT: ${{ secrets.FACTORY_GITHUB_PAT }}
+        run: |
+          set -euo pipefail
+          : "${FACTORY_GITHUB_PAT:?FACTORY_GITHUB_PAT is not configured}"
+
+      - name: Checkout Factory
+        uses: actions/checkout@v6
+        with:
+          path: factory
+
+      - name: Checkout bot repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.FACTORY_GITHUB_PAT }}
+          path: source
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Read deployment manifest
+        id: manifest
+        run: |
+          node factory/scripts/read-manifest.mjs             "$GITHUB_WORKSPACE/source"             "${{ inputs.source_repository }}" >> "$GITHUB_OUTPUT"
+
+      - name: Deployment plan
+        run: |
+          {
+            echo "### Bot Factory deployment plan"
+            echo "- Repository: `${{ inputs.source_repository }}@${{ inputs.source_ref }}`"
+            echo "- Bot: `${{ steps.manifest.outputs.name }}`"
+            echo "- Runtime: `${{ steps.manifest.outputs.runtime }}`"
+            echo "- Provider: `${{ steps.manifest.outputs.provider }}`"
+            echo "- Working directory: `${{ steps.manifest.outputs.working_directory }}`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cloudflare:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.provider == 'cloudflare' }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      BOT_SECRET_BUNDLE: ${{ inputs.secret_bundle_name != '' && secrets[inputs.secret_bundle_name] || '' }}
+
+    steps:
+      - name: Checkout Factory
+        uses: actions/checkout@v6
+        with:
+          path: factory
+
+      - name: Checkout bot repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.FACTORY_GITHUB_PAT }}
+          path: source
+          persist-credentials: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Deploy and provision Cloudflare resources
+        env:
+          FACTORY_ROOT: ${{ github.workspace }}/factory
+        run: |
+          factory/scripts/cloudflare/deploy.sh             "$GITHUB_WORKSPACE/source"             "${{ needs.prepare.outputs.working_directory }}"             "${{ needs.prepare.outputs.name }}"             "${{ needs.prepare.outputs.wrangler_config }}"             "${{ needs.prepare.outputs.health_url }}"             '${{ needs.prepare.outputs.d1_migrations }}'
+
+      - name: Persist auto-provisioned Wrangler IDs
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t changed < <(
+            git status --porcelain |
+              awk '{print $2}' |
+              grep -E '(^|/)wrangler\.(jsonc|json|toml)$' || true
+          )
+
+          if [[ "${#changed[@]}" -eq 0 ]]; then
+            echo "No Wrangler resource IDs changed."
+            exit 0
+          fi
+
+          git config user.name "discord-bot-factory[bot]"
+          git config user.email "discord-bot-factory[bot]@users.noreply.github.com"
+          git add -- "${changed[@]}"
+          git commit -m "chore: persist Cloudflare resource bindings"
+          git push origin "HEAD:${{ inputs.source_ref }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Cloudflare deployment complete"
+            echo "- Bot: `${{ needs.prepare.outputs.name }}`"
+            echo "- Resources declared by Wrangler were provisioned/linked during deployment."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  oracle:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.provider == 'oracle' }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_API_PRIVATE_KEY: ${{ secrets.OCI_API_PRIVATE_KEY }}
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_COMPARTMENT_OCID: ${{ secrets.OCI_COMPARTMENT_OCID }}
+      BOT_FACTORY_SSH_PRIVATE_KEY: ${{ secrets.BOT_FACTORY_SSH_PRIVATE_KEY }}
+      BOT_SECRET_BUNDLE: ${{ inputs.secret_bundle_name != '' && secrets[inputs.secret_bundle_name] || '' }}
+
+    steps:
+      - name: Checkout Factory
+        uses: actions/checkout@v6
+        with:
+          path: factory
+
+      - name: Checkout bot repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.FACTORY_GITHUB_PAT }}
+          path: source
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install OCI CLI
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/oci-cli"
+          "$RUNNER_TEMP/oci-cli/bin/pip" install --upgrade pip oci-cli
+          echo "$RUNNER_TEMP/oci-cli/bin" >> "$GITHUB_PATH"
+
+      - name: Configure Oracle Cloud credentials
+        run: factory/scripts/oracle/configure.sh
+
+      - name: Create or reuse free-tier host
+        id: host
+        run: factory/scripts/oracle/ensure-host.sh
+
+      - name: Build and start bot
+        env:
+          FACTORY_ROOT: ${{ github.workspace }}/factory
+        run: |
+          factory/scripts/oracle/deploy.sh             "$GITHUB_WORKSPACE/source"             "${{ needs.prepare.outputs.working_directory }}"             "${{ needs.prepare.outputs.name }}"             "${{ steps.host.outputs.public_ip }}"             "${{ needs.prepare.outputs.start_command }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Oracle deployment complete"
+            echo "- Bot: `${{ needs.prepare.outputs.name }}`"
+            echo "- Host: `${{ steps.host.outputs.instance_id }}`"
+            echo "- Container is running with restart policy `unless-stopped`."
+          } >> "$GITHUB_STEP_SUMMARY"
