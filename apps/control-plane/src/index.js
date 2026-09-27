@@ -232,6 +232,22 @@ function normalizeSetup(manifest) {
     if (!["text", "secret", "number", "url", "select", "boolean"].includes(type)) {
       throw new Error(`入力項目 ${key} のtypeが未対応です。`);
     }
+    const source = field.source && typeof field.source === "object" ? field.source : {};
+    const generator = field.generate && typeof field.generate === "object" ? field.generate : null;
+    let generate = null;
+
+    if (generator) {
+      const strategy = String(generator.strategy || "hex");
+      if (!["hex", "base64", "base64url", "uuid"].includes(strategy)) {
+        throw new Error(`入力項目 ${key} のgenerate.strategyが未対応です。`);
+      }
+      const bytes = strategy === "uuid" ? 0 : Number(generator.bytes || 32);
+      if (strategy !== "uuid" && (!Number.isInteger(bytes) || bytes < 16 || bytes > 128)) {
+        throw new Error(`入力項目 ${key} のgenerate.bytesは16〜128にしてください。`);
+      }
+      generate = { strategy, bytes };
+    }
+
     return {
       key,
       label: String(field.label || key),
@@ -242,6 +258,13 @@ function normalizeSetup(manifest) {
       pattern: field.pattern ? String(field.pattern) : "",
       options: Array.isArray(field.options) ? field.options : [],
       runtime_env: field.runtime_env !== false,
+      source: {
+        title: String(source.title || "取得方法"),
+        steps: Array.isArray(source.steps) ? source.steps.map(String) : [],
+        url: String(source.url || ""),
+        link_label: String(source.link_label || "設定画面を開く ↗"),
+      },
+      generate,
     };
   });
 
@@ -312,6 +335,57 @@ function validateFieldValue(field, raw) {
     if (!regex.test(value)) throw new Error(`${field.label} の形式が正しくありません。`);
   }
   return value;
+}
+
+function randomBytes(length) {
+  return crypto.getRandomValues(new Uint8Array(length));
+}
+
+function generateManagedValue(generate) {
+  if (generate.strategy === "uuid") return crypto.randomUUID();
+  const bytes = randomBytes(generate.bytes);
+  if (generate.strategy === "hex") {
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  const base64 = bytesToBase64(bytes);
+  if (generate.strategy === "base64url") {
+    return base64.replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
+  }
+  return base64;
+}
+
+async function getOrCreateManagedValue(env, repository, accountAlias, field) {
+  const existing = await env.DB.prepare(
+    "SELECT encrypted_value FROM managed_values WHERE repository = ? AND account_alias = ? AND field_key = ?",
+  ).bind(repository, accountAlias, field.key).first();
+
+  if (existing) return decryptValue(env, existing.encrypted_value);
+
+  const value = generateManagedValue(field.generate);
+  const encrypted = await encryptValue(env, value);
+  const now = nowIso();
+
+  await env.DB.prepare(
+    `INSERT INTO managed_values(
+       repository, account_alias, field_key, encrypted_value, generator_json, created_at, updated_at
+     ) VALUES(?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(repository, account_alias, field_key) DO NOTHING`,
+  ).bind(
+    repository,
+    accountAlias,
+    field.key,
+    encrypted,
+    JSON.stringify(field.generate),
+    now,
+    now,
+  ).run();
+
+  const stored = await env.DB.prepare(
+    "SELECT encrypted_value FROM managed_values WHERE repository = ? AND account_alias = ? AND field_key = ?",
+  ).bind(repository, accountAlias, field.key).first();
+
+  if (!stored) throw new Error(`${field.label} の自動生成値を保存できませんでした。`);
+  return decryptValue(env, stored.encrypted_value);
 }
 
 async function verifyCloudflareAccount(accountId, token) {
@@ -596,8 +670,13 @@ async function handleApi(request, env, url) {
 
       const botSecrets = {};
       for (const field of setup.fields) {
-        const value = validateFieldValue(field, provided[field.key]);
-        if (field.runtime_env && (value !== "" || field.required)) botSecrets[field.key] = value;
+        const value = field.generate
+          ? await getOrCreateManagedValue(env, repository, account.alias, field)
+          : validateFieldValue(field, provided[field.key]);
+
+        if (field.runtime_env && (value !== "" || field.required || field.generate)) {
+          botSecrets[field.key] = value;
+        }
       }
 
       const cloudflareToken = await decryptValue(env, account.encrypted_token);
