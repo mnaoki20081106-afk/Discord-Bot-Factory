@@ -146,6 +146,7 @@ jobs:
           grep -F 'X-Factory-Run-ID' .github/workflows/deploy-bot.yml
           grep -F 'export GH_TOKEN="$FACTORY_GITHUB_PAT"' .github/workflows/deploy-bot.yml
           grep -F 'control_plane_url="${FACTORY_CONTROL_PLANE_URL%/}"' .github/workflows/deploy-bot.yml
+          grep -F 'bash scripts/cloudflare/deploy.sh' .github/workflows/deploy-bot.yml
 
       - name: Enforce site-managed account routing
         run: |
