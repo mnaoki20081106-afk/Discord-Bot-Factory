@@ -76,6 +76,32 @@ if (!Array.isArray(d1Migrations) || d1Migrations.some((value) => typeof value !=
   throw new Error("d1_migrations must be an array of non-empty binding names.");
 }
 
+const d1SchemaFiles = config.d1_schema_files ?? [];
+if (!Array.isArray(d1SchemaFiles)) {
+  throw new Error("d1_schema_files must be an array.");
+}
+
+const normalizedSchemaFiles = d1SchemaFiles.map((entry, index) => {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    throw new Error(`d1_schema_files[${index}] must be an object.`);
+  }
+
+  const binding = String(entry.binding || "").trim();
+  const file = String(entry.file || "").trim();
+  if (!binding) throw new Error(`d1_schema_files[${index}].binding is required.`);
+  if (!file) throw new Error(`d1_schema_files[${index}].file is required.`);
+
+  const schemaPath = path.resolve(workdir, file);
+  if (!schemaPath.startsWith(workdir + path.sep) && schemaPath !== workdir) {
+    throw new Error(`d1_schema_files[${index}].file must stay inside working_directory.`);
+  }
+  if (!fs.existsSync(schemaPath) || !fs.statSync(schemaPath).isFile()) {
+    throw new Error(`D1 schema file does not exist: ${file}`);
+  }
+
+  return { binding, file };
+});
+
 const result = {
   name,
   runtime: "worker",
@@ -84,6 +110,7 @@ const result = {
   wrangler_config: wranglerConfig,
   health_url: String(config.health_url || "").trim(),
   d1_migrations: d1Migrations,
+  d1_schema_files: normalizedSchemaFiles,
 };
 
 for (const [key, value] of Object.entries(result)) {
