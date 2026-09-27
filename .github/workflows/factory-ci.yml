@@ -5,13 +5,13 @@ on:
     branches: ["main"]
     paths:
       - "scripts/**"
-      - "templates/**"
       - ".github/workflows/**"
+      - "docs/**"
   pull_request:
     paths:
       - "scripts/**"
-      - "templates/**"
       - ".github/workflows/**"
+      - "docs/**"
   workflow_dispatch:
 
 permissions:
@@ -24,6 +24,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check Node scripts
+        run: |
+          set -euo pipefail
+          find scripts -type f -name '*.mjs' -print0 |
+            while IFS= read -r -d '' file; do
+              node --check "$file"
+            done
+
       - name: Check shell scripts
         run: |
           set -euo pipefail
@@ -32,26 +44,51 @@ jobs:
               bash -n "$file"
             done
 
-      - name: Validate required templates
+      - name: Test Worker manifest
         run: |
           set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
 
-          test -f templates/node/package.json
-          test -f templates/node/src/index.js
-          test -f templates/node/README.md
+          mkdir -p "$tmp/apps/worker"
+          cat > "$tmp/bot-factory.json" <<'JSON'
+          {
+            "name": "Test Worker",
+            "runtime": "worker",
+            "provider": "cloudflare",
+            "working_directory": "apps/worker",
+            "wrangler_config": "wrangler.jsonc",
+            "d1_migrations": ["DB"]
+          }
+          JSON
+          printf '{}\n' > "$tmp/apps/worker/wrangler.jsonc"
 
-          test -f templates/worker/package.json
-          test -f templates/worker/src/index.js
-          test -f templates/worker/wrangler.jsonc
-          test -f templates/worker/README.md
+          output="$(node scripts/read-manifest.mjs "$tmp" owner/repo)"
+          printf '%s\n' "$output" | grep -F 'test-worker'
+          printf '%s\n' "$output" | grep -F 'cloudflare'
+          printf '%s\n' "$output" | grep -F 'apps/worker'
 
-      - name: Enforce creation-only scope
+      - name: Test Node auto-detection
         run: |
           set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          printf '{"scripts":{"start":"node src/index.js"}}\n' > "$tmp/package.json"
 
-          test ! -e .github/workflows/deploy-bot.yml
-          test ! -e scripts/cloudflare
-          test ! -e scripts/oracle
+          output="$(node scripts/read-manifest.mjs "$tmp" owner/Discord-Ticket)"
+          printf '%s\n' "$output" | grep -F 'discord-ticket'
+          printf '%s\n' "$output" | grep -F 'oracle'
+          printf '%s\n' "$output" | grep -F 'node'
 
-          test -f scripts/create-repository.sh
-          test -f scripts/scaffold-repository.sh
+      - name: Enforce deployment-only scope
+        run: |
+          set -euo pipefail
+          test -f .github/workflows/deploy-bot.yml
+          test -f scripts/cloudflare/deploy.sh
+          test -f scripts/oracle/ensure-host.sh
+          test -f scripts/oracle/deploy.sh
+
+          test ! -e .github/workflows/create-bot-repository.yml
+          test ! -e scripts/create-repository.sh
+          test ! -e scripts/scaffold-repository.sh
+          test ! -e templates
