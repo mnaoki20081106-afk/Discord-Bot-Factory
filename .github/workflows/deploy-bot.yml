@@ -81,7 +81,8 @@ jobs:
             "${{ steps.manifest.outputs.name }}" \
             "${{ steps.manifest.outputs.wrangler_config }}" \
             "${{ steps.manifest.outputs.health_url }}" \
-            '${{ steps.manifest.outputs.d1_migrations }}'
+            '${{ steps.manifest.outputs.d1_migrations }}' \
+            '${{ steps.manifest.outputs.d1_schema_files }}'
 
       - name: Persist auto-provisioned Wrangler IDs
         working-directory: source
