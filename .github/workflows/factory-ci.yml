@@ -5,10 +5,12 @@ on:
     branches: ["main"]
     paths:
       - "scripts/**"
+      - "templates/**"
       - ".github/workflows/**"
   pull_request:
     paths:
       - "scripts/**"
+      - "templates/**"
       - ".github/workflows/**"
   workflow_dispatch:
 
@@ -18,20 +20,9 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v6
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Check Node scripts
-        run: |
-          set -euo pipefail
-          find scripts -type f -name '*.mjs' -print0 |
-            while IFS= read -r -d '' file; do
-              node --check "$file"
-            done
 
       - name: Check shell scripts
         run: |
@@ -41,38 +32,26 @@ jobs:
               bash -n "$file"
             done
 
-      - name: Test provider selection
+      - name: Validate required templates
         run: |
           set -euo pipefail
-          tmp="$(mktemp -d)"
-          trap 'rm -rf "$tmp"' EXIT
 
-          mkdir -p "$tmp/worker" "$tmp/node"
-          printf '{}\n' > "$tmp/worker/wrangler.jsonc"
-          printf '{}\n' > "$tmp/worker/package.json"
-          printf '{"scripts":{"start":"node index.js"}}\n' > "$tmp/node/package.json"
+          test -f templates/node/package.json
+          test -f templates/node/src/index.js
+          test -f templates/node/README.md
 
-          worker="$(node scripts/select-provider.mjs auto auto "$tmp" worker)"
-          node_result="$(node scripts/select-provider.mjs auto auto "$tmp" node)"
+          test -f templates/worker/package.json
+          test -f templates/worker/src/index.js
+          test -f templates/worker/wrangler.jsonc
+          test -f templates/worker/README.md
 
-          printf '%s\n' "$worker" | grep -Fx 'provider=cloudflare'
-          printf '%s\n' "$worker" | grep -Fx 'runtime=worker'
-          printf '%s\n' "$node_result" | grep -Fx 'provider=oracle'
-          printf '%s\n' "$node_result" | grep -Fx 'runtime=node'
-
-      - name: Test secret bundle validation
+      - name: Ensure Factory has no deployment automation
         run: |
           set -euo pipefail
-          out="$(mktemp)"
-          trap 'rm -f "$out"' EXIT
 
-          count="$(
-            BOT_SECRET_BUNDLE='{"TOKEN":"abc","APP_ID":123}'               node scripts/validate-secret-bundle.mjs "$out"
-          )"
-
-          test "$count" = "2"
-          node -e '
-            const fs = require("node:fs");
-            const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-            if (value.TOKEN !== "abc" || value.APP_ID !== "123") process.exit(1);
-          ' "$out"
+          if find .github/workflows scripts             -type f             -not -path './scripts/create-repository.sh'             -not -path './scripts/scaffold-repository.sh'             -print0 |
+            xargs -0 grep -Eli               'wrangler deploy|oci compute|docker run|cloudflare_api_token|oci_tenancy_ocid'               >/tmp/factory-deploy-matches.txt; then
+            echo "::error::Creation-only Factory contains deployment/hosting logic:"
+            cat /tmp/factory-deploy-matches.txt
+            exit 1
+          fi
