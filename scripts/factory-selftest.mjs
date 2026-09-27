@@ -157,14 +157,14 @@ fi
     },
   );
 
-  assert.match(fs.readFileSync(argsCapture, "utf8"), /wrangler deploy/);
+  assert.match(fs.readFileSync(argsCapture, "utf8"), /wrangler@4\.142\.0 deploy/);
   assert.deepEqual(JSON.parse(fs.readFileSync(secretsCapture, "utf8")), {
     DISCORD_BOT_TOKEN: "discord-token",
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(deletesCapture, "utf8")), {
     OLD_SECRET: null,
   });
-  assert.match(fs.readFileSync(argsCapture, "utf8"), /wrangler secret bulk/);
+  assert.match(fs.readFileSync(argsCapture, "utf8"), /wrangler@4\.142\.0 secret bulk/);
 
   process.stdout.write("Factory self-test passed.\n");
 } finally {
