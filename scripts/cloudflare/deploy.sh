@@ -29,9 +29,16 @@ fi
 
 SECRET_ARGS=()
 SECRET_FILE=""
+DELETE_SECRET_FILE=""
+
+cleanup_temp_files() {
+  [[ -z "$SECRET_FILE" ]] || rm -f "$SECRET_FILE"
+  [[ -z "$DELETE_SECRET_FILE" ]] || rm -f "$DELETE_SECRET_FILE"
+}
+trap cleanup_temp_files EXIT
+
 if [[ -n "${BOT_SECRET_BUNDLE:-}" ]]; then
   SECRET_FILE="$(mktemp)"
-  trap '[[ -n "$SECRET_FILE" ]] && rm -f "$SECRET_FILE"' EXIT
   count="$(BOT_SECRET_BUNDLE="$BOT_SECRET_BUNDLE" node "$FACTORY_ROOT/scripts/validate-secret-bundle.mjs" "$SECRET_FILE")"
   if [[ "$count" -gt 0 ]]; then
     SECRET_ARGS=(--secrets-file "$SECRET_FILE")
@@ -57,6 +64,36 @@ fi
 
 echo "Deploying $BOT_NAME to Cloudflare account $CLOUDFLARE_ACCOUNT_ID..."
 npx wrangler deploy   --config "$WRANGLER_CONFIG"   --name "$BOT_NAME"   "${SECRET_ARGS[@]}"
+
+if [[ -n "${BOT_SECRET_DELETE_KEYS:-}" ]]; then
+  DELETE_SECRET_FILE="$(mktemp)"
+  delete_count="$(
+    BOT_SECRET_DELETE_KEYS="$BOT_SECRET_DELETE_KEYS" node - "$DELETE_SECRET_FILE" <<'NODE'
+const fs = require("node:fs");
+const output = process.argv[2];
+let keys;
+try {
+  keys = JSON.parse(process.env.BOT_SECRET_DELETE_KEYS || "[]");
+} catch {
+  throw new Error("BOT_SECRET_DELETE_KEYS is not valid JSON.");
+}
+if (!Array.isArray(keys)) throw new Error("BOT_SECRET_DELETE_KEYS must be an array.");
+const result = {};
+for (const raw of keys) {
+  const key = String(raw);
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Invalid secret deletion key: ${key}`);
+  result[key] = null;
+}
+fs.writeFileSync(output, JSON.stringify(result), { mode: 0o600 });
+process.stdout.write(String(Object.keys(result).length));
+NODE
+  )"
+
+  if [[ "$delete_count" -gt 0 ]]; then
+    echo "Removing $delete_count stale Factory-managed Worker secret(s)..."
+    npx wrangler secret bulk "$DELETE_SECRET_FILE" --config "$WRANGLER_CONFIG" --name "$BOT_NAME"
+  fi
+fi
 
 mapfile -t D1_BINDINGS < <(
   node -e '
