@@ -1,0 +1,78 @@
+name: Factory CI
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "scripts/**"
+      - ".github/workflows/**"
+  pull_request:
+    paths:
+      - "scripts/**"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check Node scripts
+        run: |
+          set -euo pipefail
+          find scripts -type f -name '*.mjs' -print0 |
+            while IFS= read -r -d '' file; do
+              node --check "$file"
+            done
+
+      - name: Check shell scripts
+        run: |
+          set -euo pipefail
+          find scripts -type f -name '*.sh' -print0 |
+            while IFS= read -r -d '' file; do
+              bash -n "$file"
+            done
+
+      - name: Test provider selection
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+
+          mkdir -p "$tmp/worker" "$tmp/node"
+          printf '{}\n' > "$tmp/worker/wrangler.jsonc"
+          printf '{}\n' > "$tmp/worker/package.json"
+          printf '{"scripts":{"start":"node index.js"}}\n' > "$tmp/node/package.json"
+
+          worker="$(node scripts/select-provider.mjs auto auto "$tmp" worker)"
+          node_result="$(node scripts/select-provider.mjs auto auto "$tmp" node)"
+
+          printf '%s\n' "$worker" | grep -Fx 'provider=cloudflare'
+          printf '%s\n' "$worker" | grep -Fx 'runtime=worker'
+          printf '%s\n' "$node_result" | grep -Fx 'provider=oracle'
+          printf '%s\n' "$node_result" | grep -Fx 'runtime=node'
+
+      - name: Test secret bundle validation
+        run: |
+          set -euo pipefail
+          out="$(mktemp)"
+          trap 'rm -f "$out"' EXIT
+
+          count="$(
+            BOT_SECRET_BUNDLE='{"TOKEN":"abc","APP_ID":123}'               node scripts/validate-secret-bundle.mjs "$out"
+          )"
+
+          test "$count" = "2"
+          node -e '
+            const fs = require("node:fs");
+            const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (value.TOKEN !== "abc" || value.APP_ID !== "123") process.exit(1);
+          ' "$out"
