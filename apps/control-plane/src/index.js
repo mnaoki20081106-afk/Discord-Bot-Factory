@@ -105,7 +105,7 @@ function assertSameOrigin(request) {
 
 async function masterKey(env) {
   if (!env.FACTORY_MASTER_KEY) throw new Error("FACTORY_MASTER_KEY is not configured.");
-  const bytes = base64ToBytes(env.FACTORY_MASTER_KEY);
+  const bytes = base64ToBytes(String(env.FACTORY_MASTER_KEY).replace(/\\s+/g, ""));
   if (bytes.byteLength !== 32) throw new Error("FACTORY_MASTER_KEY must be a base64-encoded 32-byte key.");
   return crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
@@ -374,10 +374,10 @@ async function handleInternal(request, env, url) {
   const claim = url.pathname.match(/^\/api\/internal\/jobs\/([^/]+)\/claim$/);
   if (claim && request.method === "POST") {
     const row = await env.DB.prepare(
-      "SELECT encrypted_payload, expires_at FROM deployments WHERE id = ?",
+      "SELECT encrypted_payload, expires_at, claimed_at FROM deployments WHERE id = ?",
     ).bind(claim[1]).first();
-    if (!row) return json({ error: "job not found" }, 404);
-    if (Date.parse(row.expires_at) < Date.now()) return json({ error: "job expired" }, 410);
+    if (!row) return json({ error: "job not found" }, 404);\n    if (row.claimed_at) return json({ error: "job already claimed" }, 409);
+    if (Date.parse(row.expires_at) < Date.now()) {\n      await env.DB.prepare(\n        "UPDATE deployments SET status = 'expired', conclusion = 'expired' WHERE id = ?",\n      ).bind(claim[1]).run();\n      return json({ error: "job expired" }, 410);\n    }
 
     const payload = JSON.parse(await decryptValue(env, row.encrypted_payload));
     await env.DB.prepare(
