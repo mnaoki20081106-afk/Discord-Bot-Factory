@@ -7,6 +7,7 @@ BOT_NAME="${3:?bot name required}"
 WRANGLER_CONFIG="${4:?wrangler config required}"
 HEALTH_URL="${5:-}"
 D1_MIGRATIONS_JSON="${6:-[]}"
+D1_SCHEMA_FILES_JSON="${7:-[]}"
 FACTORY_WRANGLER_VERSION="${FACTORY_WRANGLER_VERSION:-4.142.0}"
 
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
@@ -112,6 +113,34 @@ for binding in "${D1_BINDINGS[@]}"; do
   [[ -n "$binding" ]] || continue
   echo "Applying D1 migrations for binding $binding..."
   run_wrangler d1 migrations apply "$binding"     --remote     --config "$WRANGLER_CONFIG"
+done
+
+mapfile -t D1_SCHEMA_ENTRIES < <(
+  node -e '
+    const values = JSON.parse(process.argv[1] || "[]");
+    if (!Array.isArray(values)) process.exit(2);
+    for (const value of values) {
+      if (!value || typeof value !== "object") process.exit(3);
+      const binding = String(value.binding || "");
+      const file = String(value.file || "");
+      if (!binding || !file) process.exit(4);
+      process.stdout.write(JSON.stringify({ binding, file }) + "\n");
+    }
+  ' "$D1_SCHEMA_FILES_JSON"
+)
+
+for entry in "${D1_SCHEMA_ENTRIES[@]}"; do
+  [[ -n "$entry" ]] || continue
+  binding="$(node -e 'const x=JSON.parse(process.argv[1]);process.stdout.write(x.binding)' "$entry")"
+  schema_file="$(node -e 'const x=JSON.parse(process.argv[1]);process.stdout.write(x.file)' "$entry")"
+
+  if [[ ! -f "$schema_file" ]]; then
+    echo "::error::D1 schema file not found: $schema_file"
+    exit 1
+  fi
+
+  echo "Applying D1 schema file $schema_file to binding $binding..."
+  run_wrangler d1 execute "$binding"     --remote     --config "$WRANGLER_CONFIG"     --file "$schema_file"
 done
 
 if [[ -n "$HEALTH_URL" ]]; then
