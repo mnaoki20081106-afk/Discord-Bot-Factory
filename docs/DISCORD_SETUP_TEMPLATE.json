@@ -1,0 +1,130 @@
+{
+  "setup": {
+    "title": "Discord BOT",
+    "description": "Discord Developer Portalから必要な値を取得してください。ランダム値はFactoryが自動生成・管理します。",
+    "fields": [
+      {
+        "key": "DISCORD_BOT_TOKEN",
+        "label": "BOT Token",
+        "type": "secret",
+        "required": true,
+        "source": {
+          "title": "BOT Tokenの取得方法",
+          "steps": [
+            "Discord Developer Portalで対象Applicationを開く",
+            "左メニューのBotを開く",
+            "Token欄でReset TokenまたはCopyを押して値をコピーする"
+          ],
+          "url": "https://discord.com/developers/applications",
+          "link_label": "Discord Developer Portalを開く ↗"
+        }
+      },
+      {
+        "key": "DISCORD_APPLICATION_ID",
+        "label": "Application ID",
+        "type": "text",
+        "required": true,
+        "pattern": "^\\d{17,20}$",
+        "source": {
+          "title": "Application IDの取得方法",
+          "steps": [
+            "Discord Developer Portalで対象Applicationを開く",
+            "General Informationを開く",
+            "Application IDのCopyを押す"
+          ],
+          "url": "https://discord.com/developers/applications"
+        }
+      },
+      {
+        "key": "DISCORD_PUBLIC_KEY",
+        "label": "Public Key",
+        "type": "secret",
+        "required": false,
+        "source": {
+          "title": "Public Keyの取得方法",
+          "steps": [
+            "Discord Developer Portalで対象Applicationを開く",
+            "General Informationを開く",
+            "Public Keyをコピーする"
+          ],
+          "url": "https://discord.com/developers/applications"
+        }
+      },
+      {
+        "key": "DISCORD_CLIENT_SECRET",
+        "label": "Client Secret",
+        "type": "secret",
+        "required": false,
+        "source": {
+          "title": "Client Secretの取得方法",
+          "steps": [
+            "Discord Developer Portalで対象Applicationを開く",
+            "OAuth2を開く",
+            "Client Secretをコピーする。表示できない場合はReset Secretを使う"
+          ],
+          "url": "https://discord.com/developers/applications"
+        }
+      },
+      {
+        "key": "DISCORD_GUILD_ID",
+        "label": "Server ID",
+        "type": "text",
+        "required": false,
+        "pattern": "^\\d{17,20}$",
+        "source": {
+          "title": "Server IDの取得方法",
+          "steps": [
+            "Discordの設定で開発者モードをONにする",
+            "対象サーバーのメニューを開く",
+            "サーバーIDをコピーを押す"
+          ]
+        }
+      },
+      {
+        "key": "SESSION_ENCRYPTION_KEY",
+        "label": "Session Encryption Key",
+        "type": "secret",
+        "required": true,
+        "generate": {
+          "strategy": "base64",
+          "bytes": 32
+        }
+      },
+      {
+        "key": "INTERNAL_SHARED_SECRET",
+        "label": "Internal Shared Secret",
+        "type": "secret",
+        "required": false,
+        "generate": {
+          "strategy": "hex",
+          "bytes": 32
+        }
+      }
+    ],
+    "discord": {
+      "intents": [
+        {
+          "id": "server-members",
+          "label": "Server Members Intent",
+          "required": false,
+          "description": "メンバー参加・退出やメンバー情報を扱うBOTで有効にします。",
+          "path": "Developer Portal > Bot > Privileged Gateway Intents",
+          "url": "https://discord.com/developers/applications"
+        },
+        {
+          "id": "message-content",
+          "label": "Message Content Intent",
+          "required": false,
+          "description": "通常メッセージ本文を読むBOTで有効にします。",
+          "path": "Developer Portal > Bot > Privileged Gateway Intents",
+          "url": "https://discord.com/developers/applications"
+        }
+      ],
+      "permissions": [],
+      "checks": [],
+      "notes": [
+        "BOTごとに不要な入力項目・Intentはbot-factory.jsonから削除してください。"
+      ]
+    }
+  }
+}
