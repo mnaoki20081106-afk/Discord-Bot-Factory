@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { repositories: [], accounts: [], manifest: null, setup: null, repository: "", ref: "main" };
+const state = { repositories: [], accounts: [], manifest: null, setup: null, repository: "", ref: "main", manifestRequest: 0 };
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -256,6 +256,7 @@ function updateLaunchState() {
 }
 
 async function loadManifest() {
+  const requestId = ++state.manifestRequest;
   state.repository = $("repoSelect").value;
   state.ref = $("repoRef").value.trim() || "main";
 
@@ -271,17 +272,23 @@ async function loadManifest() {
     updateLaunchState();
     return;
   }
+  state.manifest = null;
+  state.setup = null;
+  $("launchStep").classList.add("disabled-card");
+  updateLaunchState();
   setStateText("manifestState", "bot-factory.json を読み込んでいます…");
 
   try {
     const path = "/api/github/manifest?repo=" + encodeURIComponent(state.repository) + "&ref=" + encodeURIComponent(state.ref);
     const data = await api(path);
+    if (requestId !== state.manifestRequest) return;
     state.manifest = data.manifest;
     state.setup = data.setup;
     setStateText("manifestState", data.setup.title + " のセットアップ定義を読み込みました。", "good");
     $("accountStep").classList.remove("disabled-card");
     renderSetup();
   } catch (error) {
+    if (requestId !== state.manifestRequest) return;
     state.manifest = null;
     state.setup = null;
     $("accountStep").classList.add("disabled-card");
