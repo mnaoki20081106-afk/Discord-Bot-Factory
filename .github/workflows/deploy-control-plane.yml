@@ -1,0 +1,89 @@
+name: Deploy Control Plane
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DEPLOY_CONTROL"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-control-plane
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ inputs.confirm == 'DEPLOY_CONTROL' }}
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CONTROL_PLANE_CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CONTROL_PLANE_CLOUDFLARE_ACCOUNT_ID }}
+      FACTORY_ADMIN_PASSWORD: ${{ secrets.CONTROL_PLANE_ADMIN_PASSWORD }}
+      FACTORY_MASTER_KEY: ${{ secrets.CONTROL_PLANE_MASTER_KEY }}
+      FACTORY_SESSION_SECRET: ${{ secrets.CONTROL_PLANE_SESSION_SECRET }}
+      FACTORY_CONTROL_PLANE_KEY: ${{ secrets.FACTORY_CONTROL_PLANE_KEY }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate bootstrap secrets
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_API_TOKEN:?CONTROL_PLANE_CLOUDFLARE_API_TOKEN is required}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?CONTROL_PLANE_CLOUDFLARE_ACCOUNT_ID is required}"
+          : "${FACTORY_ADMIN_PASSWORD:?CONTROL_PLANE_ADMIN_PASSWORD is required}"
+          : "${FACTORY_MASTER_KEY:?CONTROL_PLANE_MASTER_KEY is required}"
+          : "${FACTORY_SESSION_SECRET:?CONTROL_PLANE_SESSION_SECRET is required}"
+          : "${FACTORY_CONTROL_PLANE_KEY:?FACTORY_CONTROL_PLANE_KEY is required}"
+
+      - name: Install dependencies
+        working-directory: apps/control-plane
+        run: npm install
+
+      - name: Deploy Control Plane Worker
+        working-directory: apps/control-plane
+        run: npx wrangler deploy
+
+      - name: Apply D1 schema
+        working-directory: apps/control-plane
+        run: npx wrangler d1 execute DB --remote --file=./schema.sql
+
+      - name: Upload Control Plane secrets
+        working-directory: apps/control-plane
+        run: |
+          set -euo pipefail
+          secret_file="$RUNNER_TEMP/control-plane-secrets.json"
+
+          node - "$secret_file" <<'NODE'
+          const fs = require("node:fs");
+          const output = process.argv[2];
+          const values = {
+            FACTORY_ADMIN_PASSWORD: process.env.FACTORY_ADMIN_PASSWORD,
+            FACTORY_MASTER_KEY: process.env.FACTORY_MASTER_KEY,
+            FACTORY_SESSION_SECRET: process.env.FACTORY_SESSION_SECRET,
+            FACTORY_CONTROL_PLANE_KEY: process.env.FACTORY_CONTROL_PLANE_KEY,
+          };
+          fs.writeFileSync(output, JSON.stringify(values), { mode: 0o600 });
+          NODE
+
+          npx wrangler secret bulk "$secret_file"
+          rm -f "$secret_file"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Control Plane deployed"
+            echo ""
+            echo "Copy the workers.dev URL from the Wrangler deploy output."
+            echo "Then create the GitHub Actions repository variable:"
+            echo ""
+            echo "- FACTORY_CONTROL_PLANE_URL = https://<your-control-plane>.workers.dev"
+          } >> "$GITHUB_STEP_SUMMARY"
