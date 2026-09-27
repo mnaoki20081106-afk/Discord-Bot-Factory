@@ -1,39 +1,106 @@
-# One-time setup
+# Discord Bot Factory setup
 
-Discord-Bot-Factory only creates bot repositories and starter code. It does not deploy or operate bots.
+Factory deploys **existing** bot repositories. It never creates repositories.
 
-## Required GitHub secret
+The one-time setup is split into GitHub access plus the hosting providers you want Factory to use.
 
-Create one repository secret in Discord-Bot-Factory:
+## GitHub
+
+Add this Actions secret to Discord-Bot-Factory:
 
 - `FACTORY_GITHUB_PAT`
 
-The token must be able to:
+It is used to read bot repositories and, for Cloudflare deployments, commit Wrangler-generated resource IDs back to the source branch.
 
-- create repositories in your GitHub account;
-- clone the newly created repository;
-- push the generated starter code.
+Recommended scope:
 
-No Cloudflare credentials, Oracle credentials, Discord bot tokens, production environment variables, or hosting secrets belong in this Factory.
+- access to the bot repositories Factory will deploy;
+- repository Contents: read/write.
 
-## Creating a bot
+Repository-creation permission is not required.
 
-Run:
+## Cloudflare path
 
-**Actions -> Create Bot Repository -> Run workflow**
+Required Factory repository secrets:
 
-Inputs:
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
 
-- `repository_name`: the GitHub repository name;
-- `runtime`:
-  - `node` for a persistent Node/discord.js starter;
-  - `worker` for a Cloudflare Worker starter;
-- `visibility`: private or public;
-- `description`: optional repository description;
-- `confirm`: type `CREATE`.
+The Cloudflare token must be scoped to the account Factory deploys into and must have the permissions required by the resources declared in each bot's Wrangler config.
 
-The workflow creates the repository, copies the selected template, replaces placeholders, commits the generated code, and pushes it to `main`.
+Bot-specific runtime values such as Discord tokens are stored separately as JSON repository secrets in Factory, for example:
 
-Factory stops there.
+`BOT_BUNDLE_DISCORD_SECURITY`
 
-Deployment, hosting, runtime secrets, monitoring, failover, updates, and production operation are intentionally handled outside Discord-Bot-Factory.
+Example value:
+
+```json
+{
+  "DISCORD_BOT_TOKEN": "...",
+  "DISCORD_APPLICATION_ID": "..."
+}
+```
+
+Do not commit these values into a bot repository.
+
+## Oracle Cloud path
+
+Required Factory repository secrets:
+
+- `OCI_TENANCY_OCID`
+- `OCI_USER_OCID`
+- `OCI_FINGERPRINT`
+- `OCI_API_PRIVATE_KEY`
+- `OCI_REGION`
+- `OCI_COMPARTMENT_OCID`
+- `BOT_FACTORY_SSH_PRIVATE_KEY`
+
+The OCI identity needs permission in the selected compartment to manage the VCN/network resources and Compute instances used by Factory.
+
+Factory only attempts supported free-tier shapes. If free-tier capacity is unavailable, deployment fails instead of selecting a paid shape.
+
+## Per-bot manifest
+
+ChatGPT should normally add `bot-factory.json` while implementing each bot. That removes guesswork from deployment.
+
+Example Worker:
+
+```json
+{
+  "name": "discord-security",
+  "runtime": "worker",
+  "provider": "cloudflare",
+  "working_directory": ".",
+  "wrangler_config": "wrangler.jsonc",
+  "d1_migrations": ["DB"],
+  "health_url": "https://example.workers.dev/health"
+}
+```
+
+Example persistent Node bot:
+
+```json
+{
+  "name": "discord-ticket",
+  "runtime": "node",
+  "provider": "oracle",
+  "working_directory": "."
+}
+```
+
+## Deploying
+
+Open:
+
+**Discord-Bot-Factory -> Actions -> Deploy Bot -> Run workflow**
+
+Enter:
+
+- `source_repository`: e.g. `mnaoki20081106-afk/Discord-Ticket`;
+- `source_ref`: normally `main`;
+- `secret_bundle_name`: the Factory secret holding this bot's runtime secrets;
+- `confirm`: `DEPLOY`.
+
+Everything after repository selection is automated.
+
+Factory finishes after deployment/startup verification. It does not remain online as a monitoring service.
