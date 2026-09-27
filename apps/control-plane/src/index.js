@@ -332,6 +332,10 @@ function normalizeSetup(manifest) {
 
 function validateFieldValue(field, raw) {
   if (field.type === "boolean") {
+    if (raw == null || raw === "") {
+      if (field.required) throw new Error(`${field.label} は必須です。`);
+      return "";
+    }
     if (typeof raw !== "boolean") throw new Error(`${field.label} はON/OFFで指定してください。`);
     return raw ? "true" : "false";
   }
