@@ -79,19 +79,21 @@ jobs:
         working-directory: source
         env:
           SOURCE_REF: ${{ steps.claim.outputs.ref }}
+          WORKING_DIRECTORY: ${{ steps.manifest.outputs.working_directory }}
+          WRANGLER_CONFIG: ${{ steps.manifest.outputs.wrangler_config }}
         shell: bash
         run: |
           set -euo pipefail
           export GH_TOKEN="$FACTORY_GITHUB_PAT"
           : "${GH_TOKEN:?Factory GitHub PAT was not loaded}"
 
-          mapfile -t changed < <(
-            git status --porcelain |
-              awk '{print $2}' |
-              grep -E '(^|/)wrangler\.(jsonc|json|toml)$' || true
-          )
+          if [[ "$WORKING_DIRECTORY" == "." ]]; then
+            config_path="$WRANGLER_CONFIG"
+          else
+            config_path="${WORKING_DIRECTORY%/}/$WRANGLER_CONFIG"
+          fi
 
-          if [[ "${#changed[@]}" -eq 0 ]]; then
+          if [[ -z "$(git status --porcelain -- "$config_path")" ]]; then
             echo "No Wrangler resource IDs changed."
             exit 0
           fi
@@ -99,7 +101,7 @@ jobs:
           gh auth setup-git
           git config user.name "discord-bot-factory[bot]"
           git config user.email "discord-bot-factory[bot]@users.noreply.github.com"
-          git add -- "${changed[@]}"
+          git add -- "$config_path"
           git commit -m "chore: persist Cloudflare resource bindings"
           git fetch origin "$SOURCE_REF"
           git rebase "origin/$SOURCE_REF"
