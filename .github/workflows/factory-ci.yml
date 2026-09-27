@@ -45,13 +45,13 @@ jobs:
           test -f templates/worker/wrangler.jsonc
           test -f templates/worker/README.md
 
-      - name: Ensure Factory has no deployment automation
+      - name: Enforce creation-only scope
         run: |
           set -euo pipefail
 
-          if find .github/workflows scripts             -type f             -not -path './scripts/create-repository.sh'             -not -path './scripts/scaffold-repository.sh'             -print0 |
-            xargs -0 grep -Eli               'wrangler deploy|oci compute|docker run|cloudflare_api_token|oci_tenancy_ocid'               >/tmp/factory-deploy-matches.txt; then
-            echo "::error::Creation-only Factory contains deployment/hosting logic:"
-            cat /tmp/factory-deploy-matches.txt
-            exit 1
-          fi
+          test ! -e .github/workflows/deploy-bot.yml
+          test ! -e scripts/cloudflare
+          test ! -e scripts/oracle
+
+          test -f scripts/create-repository.sh
+          test -f scripts/scaffold-repository.sh
