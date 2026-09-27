@@ -118,6 +118,7 @@ jobs:
           grep -F 'CREATE TABLE IF NOT EXISTS cloudflare_accounts' apps/control-plane/schema.sql
           grep -F 'CREATE TABLE IF NOT EXISTS deployments' apps/control-plane/schema.sql
           grep -F 'CREATE TABLE IF NOT EXISTS settings' apps/control-plane/schema.sql
+          grep -F 'url: String(item.url || "")' apps/control-plane/src/index.js
 
       - name: Enforce site-managed account routing
         run: |
