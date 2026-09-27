@@ -145,6 +145,7 @@ jobs:
           grep -F 'normalizeHttpUrl' apps/control-plane/src/index.js
           grep -F 'X-Factory-Run-ID' .github/workflows/deploy-bot.yml
           grep -F 'export GH_TOKEN="$FACTORY_GITHUB_PAT"' .github/workflows/deploy-bot.yml
+          grep -F 'control_plane_url="${FACTORY_CONTROL_PLANE_URL%/}"' .github/workflows/deploy-bot.yml
 
       - name: Enforce site-managed account routing
         run: |
