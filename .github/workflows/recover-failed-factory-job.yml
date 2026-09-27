@@ -1,0 +1,33 @@
+name: Recover Failed Factory Job
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".factory/recover-failed-job"
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    env:
+      FACTORY_CONTROL_PLANE_URL: ${{ vars.FACTORY_CONTROL_PLANE_URL }}
+      FACTORY_CONTROL_PLANE_KEY: ${{ secrets.FACTORY_CONTROL_PLANE_KEY }}
+      FACTORY_FAILED_JOB_ID: "29b01e5a-180a-4c68-b6a0-f8a66636a54f"
+    steps:
+      - name: Release failed Factory deployment lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${FACTORY_CONTROL_PLANE_URL:?FACTORY_CONTROL_PLANE_URL is not configured}"
+          : "${FACTORY_CONTROL_PLANE_KEY:?FACTORY_CONTROL_PLANE_KEY is not configured}"
+          control_plane_url="${FACTORY_CONTROL_PLANE_URL%/}"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          payload="$(node -e 'process.stdout.write(JSON.stringify({conclusion:"failure",workflow_run_id:process.env.GITHUB_RUN_ID,workflow_run_url:process.argv[1]}))' "$run_url")"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $FACTORY_CONTROL_PLANE_KEY" \
+            -H "Content-Type: application/json" \
+            --data "$payload" \
+            "$control_plane_url/api/internal/jobs/$FACTORY_FAILED_JOB_ID/result"
