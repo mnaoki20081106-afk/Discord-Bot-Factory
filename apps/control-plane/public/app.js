@@ -362,15 +362,27 @@ async function loadHistory() {
   }
 }
 
+async function loadDashboard() {
+  const results = await Promise.allSettled([
+    loadSettings(),
+    loadAccounts(),
+    loadHistory(),
+    loadRepos(),
+  ]);
+  if (results.some((result) => result.status === "rejected")) {
+    $("factoryStatus").textContent = "一部データの読込に失敗";
+  }
+}
+
 async function bootstrap() {
   try {
     await api("/api/me");
-    showApp();
-    await Promise.all([loadSettings(), loadAccounts(), loadHistory()]);
-    await loadRepos();
-  } catch {
-    showLogin();
+  } catch (error) {
+    if (error.message !== "ログインが必要です。") $("loginError").textContent = error.message;
+    return;
   }
+  showApp();
+  await loadDashboard();
 }
 
 $("loginForm").addEventListener("submit", async (event) => {
@@ -378,13 +390,14 @@ $("loginForm").addEventListener("submit", async (event) => {
   $("loginError").textContent = "";
   try {
     await api("/api/login", { method: "POST", body: JSON.stringify({ password: $("loginPassword").value }) });
-    $("loginPassword").value = "";
-    showApp();
-    await Promise.all([loadSettings(), loadAccounts(), loadHistory()]);
-    await loadRepos();
   } catch (error) {
     $("loginError").textContent = error.message;
+    return;
   }
+
+  $("loginPassword").value = "";
+  showApp();
+  await loadDashboard();
 });
 
 $("logoutButton").addEventListener("click", async () => {
