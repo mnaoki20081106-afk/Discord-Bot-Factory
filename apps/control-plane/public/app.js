@@ -321,6 +321,19 @@ async function loadSettings() {
   $("githubConnection").textContent = data.github_connected ? "接続済み: @" + data.github_login : "GitHub Tokenが未登録です。";
   $("factoryStatus").textContent = data.github_connected ? "GitHub接続済み" : "GitHub未接続";
 }
+async function pollDeployment(id, attempt = 0) {
+  if (!id || attempt >= 45) return;
+  try {
+    const data = await api("/api/deployments/" + encodeURIComponent(id));
+    const status = data.deployment?.status || "";
+    await loadHistory();
+    if (["completed", "failed", "dispatch_failed", "expired"].includes(status)) return;
+  } catch {
+    // Keep the current history visible and retry transient failures.
+  }
+  setTimeout(() => pollDeployment(id, attempt + 1), 4000);
+}
+
 async function loadHistory() {
   const data = await api("/api/deployments");
   clear($("historyList"));
@@ -473,8 +486,7 @@ $("launchButton").addEventListener("click", async () => {
     setTab("history");
     await loadHistory();
     if (data.deployment && data.deployment.id) {
-      setTimeout(loadHistory, 4000);
-      setTimeout(loadHistory, 12000);
+      setTimeout(() => pollDeployment(data.deployment.id), 2500);
     }
   } catch (error) {
     setStateText("launchState", error.message, "error");
