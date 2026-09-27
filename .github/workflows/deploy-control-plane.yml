@@ -26,6 +26,7 @@ jobs:
       FACTORY_MASTER_KEY: ${{ secrets.CONTROL_PLANE_MASTER_KEY }}
       FACTORY_SESSION_SECRET: ${{ secrets.CONTROL_PLANE_SESSION_SECRET }}
       FACTORY_CONTROL_PLANE_KEY: ${{ secrets.FACTORY_CONTROL_PLANE_KEY }}
+      FACTORY_CONTROL_PLANE_URL: ${{ vars.FACTORY_CONTROL_PLANE_URL }}
 
     steps:
       - uses: actions/checkout@v6
@@ -45,6 +46,26 @@ jobs:
           : "${FACTORY_MASTER_KEY:?CONTROL_PLANE_MASTER_KEY is required}"
           : "${FACTORY_SESSION_SECRET:?CONTROL_PLANE_SESSION_SECRET is required}"
           : "${FACTORY_CONTROL_PLANE_KEY:?FACTORY_CONTROL_PLANE_KEY is required}"
+
+          node <<'NODE'
+          const master = String(process.env.FACTORY_MASTER_KEY || "").replace(/\s+/g, "");
+          let decoded;
+          try {
+            decoded = Buffer.from(master, "base64");
+          } catch {
+            process.exitCode = 1;
+            throw new Error("CONTROL_PLANE_MASTER_KEY must be valid base64.");
+          }
+          if (decoded.length !== 32) {
+            throw new Error("CONTROL_PLANE_MASTER_KEY must decode to exactly 32 bytes.");
+          }
+          if (String(process.env.FACTORY_SESSION_SECRET || "").length < 32) {
+            throw new Error("CONTROL_PLANE_SESSION_SECRET must be at least 32 characters.");
+          }
+          if (String(process.env.FACTORY_CONTROL_PLANE_KEY || "").length < 32) {
+            throw new Error("FACTORY_CONTROL_PLANE_KEY must be at least 32 characters.");
+          }
+          NODE
 
       - name: Install dependencies
         working-directory: apps/control-plane
@@ -98,6 +119,14 @@ jobs:
       - name: Remove temporary secrets file
         if: ${{ always() }}
         run: rm -f "${{ steps.secrets.outputs.path }}"
+
+      - name: Verify deployed Control Plane
+        if: ${{ env.FACTORY_CONTROL_PLANE_URL != '' }}
+        run: |
+          set -euo pipefail
+          curl -fsS --retry 5 --retry-all-errors --retry-delay 2 \
+            "${FACTORY_CONTROL_PLANE_URL%/}/" \
+            >/dev/null
 
       - name: Summary
         run: |
