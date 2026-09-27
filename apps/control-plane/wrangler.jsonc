@@ -1,5 +1,5 @@
 {
-  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "discord-bot-factory-control",
   "main": "src/index.js",
   "compatibility_date": "2026-09-25",
