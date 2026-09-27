@@ -458,6 +458,42 @@ async function getOrCreateManagedValue(env, repository, accountAlias, field) {
   return decryptValue(env, stored.encrypted_value);
 }
 
+function parseSecretKeys(value) {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.map(String).filter((key) => /^[A-Z][A-Z0-9_]*$/.test(key)))].sort();
+  } catch {
+    return [];
+  }
+}
+
+async function commitDeploymentSecretState(env, deploymentId) {
+  const row = await env.DB.prepare(
+    `SELECT d.account_alias, d.worker_name, s.secret_keys_json
+     FROM deployments d
+     JOIN deployment_secret_sets s ON s.deployment_id = d.id
+     WHERE d.id = ? AND d.status = 'completed'`,
+  ).bind(deploymentId).first();
+
+  if (!row) return false;
+
+  const keys = parseSecretKeys(row.secret_keys_json);
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO worker_secret_state(account_alias, worker_name, secret_keys_json, updated_at)
+       VALUES(?, ?, ?, ?)
+       ON CONFLICT(account_alias, worker_name) DO UPDATE SET
+         secret_keys_json = excluded.secret_keys_json,
+         updated_at = excluded.updated_at`,
+    ).bind(row.account_alias, row.worker_name, JSON.stringify(keys), nowIso()),
+    env.DB.prepare(
+      "DELETE FROM deployment_secret_sets WHERE deployment_id = ?",
+    ).bind(deploymentId),
+  ]);
+  return true;
+}
+
 async function verifyCloudflareAccount(accountId, token) {
   const response = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts`,
@@ -579,6 +615,10 @@ async function handleInternal(request, env, url) {
 
     if (!Number(updated.meta?.changes || 0)) {
       return json({ ok: true, ignored: true });
+    }
+
+    if (status === "completed") {
+      await commitDeploymentSecretState(env, result[1]);
     }
 
     await audit(env, "deployment_result", { id: result[1], conclusion, workflow_run_id: workflowRunId });
@@ -797,6 +837,21 @@ async function handleApi(request, env, url) {
       // an old failed run cannot block an immediate retry.
       await cleanupExpiredDeployments(env);
 
+      const previousWorker = await env.DB.prepare(
+        `SELECT worker_name
+         FROM deployments
+         WHERE account_alias = ?
+           AND repository = ?
+           AND status = 'completed'
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      ).bind(account.alias, repository).first();
+      if (previousWorker && previousWorker.worker_name !== workerName) {
+        throw new Error(
+          `Worker名の変更を検知しました。旧Worker「${previousWorker.worker_name}」との二重起動を防ぐため停止しました。`,
+        );
+      }
+
       const activeDeployment = await env.DB.prepare(
         `SELECT id
          FROM deployments
@@ -845,6 +900,14 @@ async function handleApi(request, env, url) {
         }
       }
 
+      const currentSecretKeys = Object.keys(botSecrets).sort();
+      const previousSecretState = await env.DB.prepare(
+        "SELECT secret_keys_json FROM worker_secret_state WHERE account_alias = ? AND worker_name = ?",
+      ).bind(account.alias, workerName).first();
+      const previousSecretKeys = parseSecretKeys(previousSecretState?.secret_keys_json || "[]");
+      const currentSecretKeySet = new Set(currentSecretKeys);
+      const staleSecretKeys = previousSecretKeys.filter((key) => !currentSecretKeySet.has(key));
+
       const factoryRepo = String(env.FACTORY_GITHUB_REPO || "").trim();
       const factoryRef = String(env.FACTORY_GITHUB_REF || "main").trim();
       if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(factoryRepo)) {
@@ -867,24 +930,30 @@ async function handleApi(request, env, url) {
         cloudflare_api_token: cloudflareToken,
         github_token: github.value,
         bot_secret_bundle: botSecrets,
+        bot_secret_delete_keys: staleSecretKeys,
       };
       const encryptedPayload = await encryptValue(env, payload);
 
-      await env.DB.prepare(
-        `INSERT INTO deployments(
-          id, repository, ref, worker_name, account_alias, encrypted_payload,
-          status, created_at, expires_at
-        ) VALUES(?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
-      ).bind(
-        id,
-        repository,
-        ref,
-        workerName,
-        account.alias,
-        encryptedPayload,
-        createdAt,
-        expiresAt,
-      ).run();
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO deployments(
+            id, repository, ref, worker_name, account_alias, encrypted_payload,
+            status, created_at, expires_at
+          ) VALUES(?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+        ).bind(
+          id,
+          repository,
+          ref,
+          workerName,
+          account.alias,
+          encryptedPayload,
+          createdAt,
+          expiresAt,
+        ),
+        env.DB.prepare(
+          "INSERT INTO deployment_secret_sets(deployment_id, secret_keys_json) VALUES(?, ?)",
+        ).bind(id, JSON.stringify(currentSecretKeys)),
+      ]);
 
       let dispatch;
       try {
@@ -988,6 +1057,9 @@ async function handleApi(request, env, url) {
           }
         }
       }
+    }
+    if (row.status === "completed") {
+      await commitDeploymentSecretState(env, row.id);
     }
     return json({ deployment: row });
   }
