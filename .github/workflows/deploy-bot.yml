@@ -113,4 +113,11 @@ jobs:
           CONCLUSION: ${{ job.status }}
         run: |
           set +e
-          curl -fsS             -X POST             -H "Authorization: Bearer $FACTORY_CONTROL_PLANE_KEY"             -H "Content-Type: application/json"             --data "{\"conclusion\":\"$CONCLUSION\"}"             "$FACTORY_CONTROL_PLANE_URL/api/internal/jobs/${{ inputs.job_id }}/result"             >/dev/null
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          payload="$(node -e 'process.stdout.write(JSON.stringify({conclusion:process.env.CONCLUSION,workflow_run_id:process.env.GITHUB_RUN_ID,workflow_run_url:process.argv[1]}))' "$run_url")"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $FACTORY_CONTROL_PLANE_KEY" \
+            -H "Content-Type: application/json" \
+            --data "$payload" \
+            "$FACTORY_CONTROL_PLANE_URL/api/internal/jobs/${{ inputs.job_id }}/result" \
+            >/dev/null
