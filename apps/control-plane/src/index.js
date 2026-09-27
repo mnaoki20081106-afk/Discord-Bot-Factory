@@ -398,10 +398,12 @@ async function handleInternal(request, env, url) {
     const body = await request.json();
     const conclusion = String(body.conclusion || "unknown").slice(0, 40);
     const status = conclusion === "success" ? "completed" : "failed";
+    const workflowRunId = String(body.workflow_run_id || "").slice(0, 40);
+    const workflowRunUrl = String(body.workflow_run_url || "").slice(0, 500);
     await env.DB.prepare(
-      "UPDATE deployments SET status = ?, conclusion = ?, completed_at = ? WHERE id = ?",
-    ).bind(status, conclusion, nowIso(), result[1]).run();
-    await audit(env, "deployment_result", { id: result[1], conclusion });
+      "UPDATE deployments SET status = ?, conclusion = ?, completed_at = ?, workflow_run_id = ?, workflow_run_url = ? WHERE id = ?",
+    ).bind(status, conclusion, nowIso(), workflowRunId, workflowRunUrl, result[1]).run();
+    await audit(env, "deployment_result", { id: result[1], conclusion, workflow_run_id: workflowRunId });
     return json({ ok: true });
   }
 
