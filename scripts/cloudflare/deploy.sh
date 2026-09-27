@@ -40,7 +40,22 @@ fi
 
 cd "$WORKDIR"
 
-echo "Deploying $BOT_NAME to Cloudflare..."
+# The Factory registry is the single source of truth for account routing.
+# Reject a hard-coded account_id so a stale Wrangler config cannot send a bot
+# to a different Cloudflare account than bot-factory.json requested.
+if [[ "$WRANGLER_CONFIG" == *.toml ]]; then
+  if grep -Eq '^[[:space:]]*account_id[[:space:]]*=' "$WRANGLER_CONFIG"; then
+    echo "::error::Remove account_id from $WRANGLER_CONFIG. Factory selects the account through CLOUDFLARE_ACCOUNTS_JSON."
+    exit 1
+  fi
+else
+  if grep -Eq '"account_id"[[:space:]]*:' "$WRANGLER_CONFIG"; then
+    echo "::error::Remove account_id from $WRANGLER_CONFIG. Factory selects the account through CLOUDFLARE_ACCOUNTS_JSON."
+    exit 1
+  fi
+fi
+
+echo "Deploying $BOT_NAME to Cloudflare account $CLOUDFLARE_ACCOUNT_ID..."
 npx wrangler deploy   --config "$WRANGLER_CONFIG"   --name "$BOT_NAME"   "${SECRET_ARGS[@]}"
 
 mapfile -t D1_BINDINGS < <(
