@@ -1,38 +1,88 @@
 # Discord Bot Factory setup
 
-Factory deploys **existing** bot repositories. It never creates repositories.
+Factory deploys existing bot repositories to explicitly selected Cloudflare accounts.
 
-The one-time setup is split into GitHub access plus the hosting providers you want Factory to use.
+## 1. GitHub source access
 
-## GitHub
-
-Add this Actions secret to Discord-Bot-Factory:
+Create this Actions repository secret in Discord-Bot-Factory:
 
 - `FACTORY_GITHUB_PAT`
 
-It is used to read bot repositories and, for Cloudflare deployments, commit Wrangler-generated resource IDs back to the source branch.
+It needs access to the bot repositories Factory will deploy, with repository Contents read/write.
 
-Recommended scope:
-
-- access to the bot repositories Factory will deploy;
-- repository Contents: read/write.
+Read access is used to fetch bot code. Write access is used only when Wrangler writes generated resource IDs into a Wrangler config and Factory persists those changes back to the bot repository.
 
 Repository-creation permission is not required.
 
-## Cloudflare path
+## 2. Create one Cloudflare API token per Cloudflare account
 
-Required Factory repository secrets:
+For every Cloudflare account used by Factory, create a separate API token scoped only to that account.
 
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
+For example:
 
-The Cloudflare token must be scoped to the account Factory deploys into and must have the permissions required by the resources declared in each bot's Wrangler config.
+- Discord server A -> Cloudflare account A -> `CLOUDFLARE_GUILD_A_API_TOKEN`
+- Discord server B -> Cloudflare account B -> `CLOUDFLARE_GUILD_B_API_TOKEN`
 
-Bot-specific runtime values such as Discord tokens are stored separately as JSON repository secrets in Factory, for example:
+The token needs the Cloudflare permissions required by the Wrangler resources used by bots in that account. At minimum, Worker deployment requires Workers Scripts write/edit access. Add D1/KV/R2/etc permissions only when that account's bots use those resources.
+
+Do not use one unrestricted token for every Cloudflare account.
+
+## 3. Register account metadata
+
+In Discord-Bot-Factory:
+
+**Settings -> Secrets and variables -> Actions -> Variables -> New repository variable**
+
+Create:
+
+`CLOUDFLARE_ACCOUNTS_JSON`
+
+Example value:
+
+```json
+{
+  "guild-a": {
+    "account_id": "0123456789abcdef0123456789abcdef",
+    "token_secret": "CLOUDFLARE_GUILD_A_API_TOKEN"
+  },
+  "guild-b": {
+    "account_id": "fedcba9876543210fedcba9876543210",
+    "token_secret": "CLOUDFLARE_GUILD_B_API_TOKEN"
+  }
+}
+```
+
+Rules:
+
+- the top-level key is the account alias used by `bot-factory.json`;
+- `account_id` is that Cloudflare account's 32-character Account ID;
+- `token_secret` is the name of the GitHub Actions secret containing the API token for that account;
+- aliases use lowercase letters, numbers, hyphens, or underscores.
+
+Account IDs and secret names are not secret, so the registry is a GitHub Variable rather than a Secret.
+
+## 4. Add the API token secrets
+
+In:
+
+**Settings -> Secrets and variables -> Actions -> Secrets**
+
+Create each secret named by the registry, for example:
+
+- `CLOUDFLARE_GUILD_A_API_TOKEN`
+- `CLOUDFLARE_GUILD_B_API_TOKEN`
+
+Each secret value is the Cloudflare API token scoped to only that Cloudflare account.
+
+## 5. Add bot runtime secrets
+
+Bot-specific values such as Discord tokens are separate from Cloudflare credentials.
+
+Example secret:
 
 `BOT_BUNDLE_DISCORD_SECURITY`
 
-Example value:
+Value:
 
 ```json
 {
@@ -41,35 +91,18 @@ Example value:
 }
 ```
 
-Do not commit these values into a bot repository.
+Do not commit these values into the bot repository.
 
-## Oracle Cloud path
+## 6. Add bot-factory.json to each bot repository
 
-Required Factory repository secrets:
-
-- `OCI_TENANCY_OCID`
-- `OCI_USER_OCID`
-- `OCI_FINGERPRINT`
-- `OCI_API_PRIVATE_KEY`
-- `OCI_REGION`
-- `OCI_COMPARTMENT_OCID`
-- `BOT_FACTORY_SSH_PRIVATE_KEY`
-
-The OCI identity needs permission in the selected compartment to manage the VCN/network resources and Compute instances used by Factory.
-
-Factory only attempts supported free-tier shapes. If free-tier capacity is unavailable, deployment fails instead of selecting a paid shape.
-
-## Per-bot manifest
-
-ChatGPT should normally add `bot-factory.json` while implementing each bot. That removes guesswork from deployment.
-
-Example Worker:
+Example:
 
 ```json
 {
   "name": "discord-security",
   "runtime": "worker",
   "provider": "cloudflare",
+  "cloudflare_account": "guild-a",
   "working_directory": ".",
   "wrangler_config": "wrangler.jsonc",
   "d1_migrations": ["DB"],
@@ -77,18 +110,11 @@ Example Worker:
 }
 ```
 
-Example persistent Node bot:
+The `cloudflare_account` value must match an alias in `CLOUDFLARE_ACCOUNTS_JSON`.
 
-```json
-{
-  "name": "discord-ticket",
-  "runtime": "node",
-  "provider": "oracle",
-  "working_directory": "."
-}
-```
+Factory intentionally refuses to deploy a bot that does not specify an account alias.
 
-## Deploying
+## 7. Deploy
 
 Open:
 
@@ -96,11 +122,20 @@ Open:
 
 Enter:
 
-- `source_repository`: e.g. `mnaoki20081106-afk/Discord-Ticket`;
+- `source_repository`: for example `mnaoki20081106-afk/Discord-Security`;
 - `source_ref`: normally `main`;
-- `secret_bundle_name`: the Factory secret holding this bot's runtime secrets;
+- `secret_bundle_name`: for example `BOT_BUNDLE_DISCORD_SECURITY`;
 - `confirm`: `DEPLOY`.
 
-Everything after repository selection is automated.
+Factory then:
 
-Factory finishes after deployment/startup verification. It does not remain online as a monitoring service.
+1. reads `bot-factory.json`;
+2. resolves the selected Cloudflare account;
+3. loads only that account's API token;
+4. deploys the Worker;
+5. provisions/links Wrangler-declared resources;
+6. applies configured D1 migrations;
+7. persists generated Wrangler resource IDs when necessary;
+8. performs the optional health check.
+
+Factory does not fail over to another Cloudflare account automatically.
