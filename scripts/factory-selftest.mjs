@@ -108,6 +108,7 @@ try {
   fs.mkdirSync(deployWorker, { recursive: true });
   fs.mkdirSync(fakeBin, { recursive: true });
   fs.writeFileSync(path.join(deployWorker, "wrangler.jsonc"), "{}\n");
+  fs.writeFileSync(path.join(deployWorker, "schema.sql"), "CREATE TABLE IF NOT EXISTS smoke(id INTEGER PRIMARY KEY);\n");
 
   const fakeNpx = path.join(fakeBin, "npx");
   fs.writeFileSync(
@@ -140,6 +141,7 @@ done
       "wrangler.jsonc",
       "",
       "[]",
+      JSON.stringify([{ binding: "DB", file: "schema.sql" }]),
     ],
     {
       cwd: root,
@@ -167,6 +169,7 @@ done
     OLD_SECRET: null,
   });
   assert.match(fs.readFileSync(argsCapture, "utf8"), /wrangler@4\.142\.0 secret bulk/);
+  assert.match(fs.readFileSync(argsCapture, "utf8"), /wrangler@4\.142\.0 d1 execute DB .*--file schema\.sql/);
 
   process.stdout.write("Factory self-test passed.\n");
 } finally {
