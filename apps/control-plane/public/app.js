@@ -86,6 +86,15 @@ function renderAccounts() {
 function makeField(field) {
   const wrap = element("label");
   const title = element("span", "", field.label);
+
+  if (field.generate) {
+    title.append(element("span", "tag", "Factory自動生成"));
+    wrap.append(title);
+    wrap.append(element("div", "managed-value", "Factoryが安全なランダム値を生成・暗号化保存し、再デプロイ時も同じ値を再利用します。"));
+    if (field.help) wrap.append(element("small", "hint", field.help));
+    return wrap;
+  }
+
   if (field.required) title.append(element("span", "tag", "必須"));
   wrap.append(title);
 
@@ -112,7 +121,32 @@ function makeField(field) {
   input.dataset.field = field.key;
   input.required = Boolean(field.required);
   wrap.append(input);
+
   if (field.help) wrap.append(element("small", "hint", field.help));
+
+  const source = field.source || {};
+  if ((source.steps || []).length || source.url) {
+    const details = document.createElement("details");
+    details.className = "field-help";
+    const summary = element("summary", "", source.title || "取得方法");
+    details.append(summary);
+
+    if ((source.steps || []).length) {
+      const list = document.createElement("ol");
+      for (const step of source.steps) list.append(element("li", "", step));
+      details.append(list);
+    }
+
+    if (source.url) {
+      const link = element("a", "", source.link_label || "設定画面を開く ↗");
+      link.href = source.url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      details.append(link);
+    }
+    wrap.append(details);
+  }
+
   return wrap;
 }
 
@@ -183,6 +217,7 @@ function requiredRequirementsChecked() {
 function fieldsValid() {
   if (!state.setup) return false;
   return (state.setup.fields || []).every((field) => {
+    if (field.generate) return true;
     const el = $("field-" + field.key);
     if (!el) return !field.required;
     if (field.type === "boolean") return !field.required || el.value === "true" || el.value === "false";
@@ -389,6 +424,7 @@ $("launchButton").addEventListener("click", async () => {
 
   const fields = {};
   for (const field of state.setup.fields || []) {
+    if (field.generate) continue;
     const el = $("field-" + field.key);
     if (!el) continue;
     fields[field.key] = field.type === "boolean" ? el.value === "true" : el.value;
