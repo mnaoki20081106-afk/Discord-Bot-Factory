@@ -82,6 +82,7 @@ try {
       cloudflare_api_token: "cf-token",
       github_token: "github-token",
       bot_secret_bundle: { DISCORD_BOT_TOKEN: "discord-token" },
+      bot_secret_delete_keys: ["OLD_SECRET"],
     }),
   );
   runNode("scripts/claim-job.mjs", [jobFile], {
@@ -93,6 +94,7 @@ try {
   assert.match(envText, /FACTORY_GITHUB_PAT=github-token/);
   assert.match(envText, /CLOUDFLARE_API_TOKEN=cf-token/);
   assert.match(envText, /BOT_SECRET_BUNDLE=/);
+  assert.match(envText, /BOT_SECRET_DELETE_KEYS=\["OLD_SECRET"\]/);
   assert.match(outputText, /repository=owner\/test-bot/);
   assert.match(outputText, /ref=main/);
 
@@ -102,6 +104,7 @@ try {
   const fakeBin = path.join(tmp, "bin");
   const argsCapture = path.join(tmp, "npx-args.txt");
   const secretsCapture = path.join(tmp, "wrangler-secrets.json");
+  const deletesCapture = path.join(tmp, "wrangler-secret-deletes.json");
   fs.mkdirSync(deployWorker, { recursive: true });
   fs.mkdirSync(fakeBin, { recursive: true });
   fs.writeFileSync(path.join(deployWorker, "wrangler.jsonc"), "{}\n");
@@ -118,6 +121,9 @@ for ((i=0; i<\${#args[@]}; i++)); do
     cp "\${args[$((i+1))]}" "$FACTORY_TEST_SECRETS"
   fi
 done
+if [[ "\${args[0]:-}" == "wrangler" && "\${args[1]:-}" == "secret" && "\${args[2]:-}" == "bulk" ]]; then
+  cp "\${args[3]}" "$FACTORY_TEST_SECRET_DELETES"
+fi
 `,
     { mode: 0o755 },
   );
@@ -142,8 +148,10 @@ done
         CLOUDFLARE_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
         FACTORY_ROOT: root,
         BOT_SECRET_BUNDLE: JSON.stringify({ DISCORD_BOT_TOKEN: "discord-token" }),
+        BOT_SECRET_DELETE_KEYS: JSON.stringify(["OLD_SECRET"]),
         FACTORY_TEST_ARGS: argsCapture,
         FACTORY_TEST_SECRETS: secretsCapture,
+        FACTORY_TEST_SECRET_DELETES: deletesCapture,
       },
       stdio: "pipe",
     },
@@ -153,6 +161,10 @@ done
   assert.deepEqual(JSON.parse(fs.readFileSync(secretsCapture, "utf8")), {
     DISCORD_BOT_TOKEN: "discord-token",
   });
+  assert.deepEqual(JSON.parse(fs.readFileSync(deletesCapture, "utf8")), {
+    OLD_SECRET: null,
+  });
+  assert.match(fs.readFileSync(argsCapture, "utf8"), /wrangler secret bulk/);
 
   process.stdout.write("Factory self-test passed.\n");
 } finally {
