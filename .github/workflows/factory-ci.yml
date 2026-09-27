@@ -139,11 +139,15 @@ jobs:
           grep -F 'CREATE TABLE IF NOT EXISTS deployments' apps/control-plane/schema.sql
           grep -F 'CREATE TABLE IF NOT EXISTS settings' apps/control-plane/schema.sql
           grep -F 'CREATE TABLE IF NOT EXISTS managed_values' apps/control-plane/schema.sql
+          grep -F 'CREATE TABLE IF NOT EXISTS deployment_profiles' apps/control-plane/schema.sql
           grep -F 'CREATE TABLE IF NOT EXISTS worker_secret_state' apps/control-plane/schema.sql
           grep -F 'CREATE TABLE IF NOT EXISTS deployment_secret_sets' apps/control-plane/schema.sql
           grep -F 'BOT_SECRET_DELETE_KEYS' scripts/cloudflare/deploy.sh
           grep -F 'CREATE UNIQUE INDEX IF NOT EXISTS deployments_active_worker_unique' apps/control-plane/schema.sql
           grep -F 'getOrCreateManagedValue' apps/control-plane/src/index.js
+          grep -F 'saveDeploymentProfile' apps/control-plane/src/index.js
+          grep -F '/restart' apps/control-plane/src/index.js
+          grep -F 'restartDeployment' apps/control-plane/public/app.js
           test -f docs/DISCORD_SETUP_TEMPLATE.json
           grep -F 'normalizeHttpUrl' apps/control-plane/src/index.js
           grep -F 'X-Factory-Run-ID' .github/workflows/deploy-bot.yml
