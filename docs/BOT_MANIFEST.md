@@ -19,7 +19,8 @@ Recommended fields:
 - `working_directory`: directory containing the Worker project.
 - `wrangler_config`: Wrangler configuration filename.
 - `health_url`: optional URL checked after deployment.
-- `d1_migrations`: optional D1 binding names whose migrations should be applied remotely.
+- `d1_migrations`: optional D1 binding names whose Wrangler migrations should be applied remotely.
+- `d1_schema_files`: optional direct SQL schema initialization entries. Each entry is `{ "binding": "DB", "file": "schema.sql" }`; the file path is relative to `working_directory`.
 
 Do not put a hard-coded `account_id` in Wrangler config for Factory-managed bots. The account selected in the site is exported to Wrangler as `CLOUDFLARE_ACCOUNT_ID`.
 
@@ -168,7 +169,8 @@ The site will not enable **BOTを起動** until all required fields are filled a
   "provider": "cloudflare",
   "working_directory": ".",
   "wrangler_config": "wrangler.jsonc",
-  "d1_migrations": ["DB"],
+  "d1_migrations": [],
+  "d1_schema_files": [{ "binding": "DB", "file": "schema.sql" }],
   "health_url": "https://discord-security.example.workers.dev/health",
   "setup": {
     "title": "Discord Security",
