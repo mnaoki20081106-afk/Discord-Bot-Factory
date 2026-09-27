@@ -129,6 +129,13 @@ function makeRequirement(item) {
   body.append(strong);
   if (item.description) body.append(element("small", "", item.description));
   if (item.path) body.append(element("small", "", "設定場所: " + item.path));
+  if (item.url) {
+    const link = element("a", "", "設定画面を開く ↗");
+    link.href = item.url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    body.append(link);
+  }
   label.append(check, body);
   return label;
 }
