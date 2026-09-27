@@ -21,6 +21,16 @@ const bundle = payload.bot_secret_bundle && typeof payload.bot_secret_bundle ===
   ? payload.bot_secret_bundle
   : {};
 
+const deleteKeys = Array.isArray(payload.bot_secret_delete_keys)
+  ? [...new Set(payload.bot_secret_delete_keys.map(String))]
+  : [];
+
+for (const key of deleteKeys) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    throw new Error(`Invalid secret deletion key: ${key}`);
+  }
+}
+
 for (const secret of [
   payload.cloudflare_api_token,
   payload.github_token,
@@ -35,6 +45,7 @@ const envLines = [
   `CLOUDFLARE_API_TOKEN=${payload.cloudflare_api_token}`,
   `CLOUDFLARE_ACCOUNT_ID=${payload.cloudflare_account_id}`,
   `BOT_SECRET_BUNDLE=${JSON.stringify(bundle)}`,
+  `BOT_SECRET_DELETE_KEYS=${JSON.stringify(deleteKeys)}`,
 ];
 
 fs.appendFileSync(process.env.GITHUB_ENV, envLines.join("\n") + "\n");
