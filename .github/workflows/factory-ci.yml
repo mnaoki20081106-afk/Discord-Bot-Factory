@@ -40,6 +40,7 @@ jobs:
           node --check scripts/claim-job.mjs
           node --check apps/control-plane/src/index.js
           node --check apps/control-plane/public/app.js
+          node --check scripts/factory-selftest.mjs
 
       - name: Check shell scripts
         run: |
@@ -48,6 +49,11 @@ jobs:
             while IFS= read -r -d '' file; do
               bash -n "$file"
             done
+
+      - name: Run Factory self-test
+        run: |
+          set -euo pipefail
+          node scripts/factory-selftest.mjs
 
       - name: Validate Control Plane Worker build
         working-directory: apps/control-plane
@@ -121,7 +127,9 @@ jobs:
           grep -F 'CREATE TABLE IF NOT EXISTS managed_values' apps/control-plane/schema.sql
           grep -F 'getOrCreateManagedValue' apps/control-plane/src/index.js
           test -f docs/DISCORD_SETUP_TEMPLATE.json
-          grep -F 'url: String(item.url || "")' apps/control-plane/src/index.js
+          grep -F 'normalizeHttpUrl' apps/control-plane/src/index.js
+          grep -F 'X-Factory-Run-ID' .github/workflows/deploy-bot.yml
+          grep -F 'export GH_TOKEN="$FACTORY_GITHUB_PAT"' .github/workflows/deploy-bot.yml
 
       - name: Enforce site-managed account routing
         run: |
