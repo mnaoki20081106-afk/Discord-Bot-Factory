@@ -785,6 +785,10 @@ async function handleApi(request, env, url) {
       const setup = normalizeSetup(manifest);
       const workerName = normalizeWorkerName(manifest.name || repository.split("/")[1]);
 
+      // Clear expired/stalled jobs before checking the active-worker lock so
+      // an old failed run cannot block an immediate retry.
+      await cleanupExpiredDeployments(env);
+
       const activeDeployment = await env.DB.prepare(
         `SELECT id
          FROM deployments
