@@ -706,6 +706,16 @@ async function handleApi(request, env, url) {
   return json({ error: "not found" }, 404);
 }
 
+async function cleanupExpiredDeployments(env) {
+  const result = await env.DB.prepare(
+    `UPDATE deployments
+     SET status = 'expired', conclusion = 'expired'
+     WHERE claimed_at IS NULL
+       AND status IN ('queued', 'dispatched')
+       AND expires_at < ?`,
+  ).bind(nowIso()).run();
+  return Number(result.meta?.changes || 0);
+}
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -716,6 +726,15 @@ export default {
     } catch (error) {
       console.error("control-plane error", error?.message || error);
       return json({ error: "サーバー処理に失敗しました。" }, 500);
+    }
+  },
+
+  async scheduled(_controller, env) {
+    try {
+      const cleaned = await cleanupExpiredDeployments(env);
+      if (cleaned > 0) await audit(env, "deployment_expired_cleanup", { cleaned });
+    } catch (error) {
+      console.error("control-plane cleanup error", error?.message || error);
     }
   },
 };
