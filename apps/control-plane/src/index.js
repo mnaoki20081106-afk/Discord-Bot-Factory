@@ -691,6 +691,11 @@ async function handleApi(request, env, url) {
       ).bind(accountId).first();
       const alias = existing?.alias || `cf-${crypto.randomUUID()}`;
 
+      const duplicateLabel = await env.DB.prepare(
+        "SELECT account_id FROM cloudflare_accounts WHERE LOWER(label) = LOWER(?) AND account_id != ? LIMIT 1",
+      ).bind(label, accountId).first();
+      if (duplicateLabel) throw new Error("Cloudflare Accountの表示名は重複できません。");
+
       await verifyCloudflareAccount(accountId, token);
       const encryptedToken = await encryptValue(env, token);
       const now = nowIso();
