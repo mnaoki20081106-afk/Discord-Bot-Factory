@@ -106,8 +106,8 @@ function makeField(field) {
       input.append(option("true", "ON"), option("false", "OFF"));
     } else {
       for (const item of field.options || []) {
-        const value = typeof item === "string" ? item : String(item.value || "");
-        const label = typeof item === "string" ? item : String(item.label || item.value || "");
+        const value = typeof item === "string" ? item : String(item.value ?? "");
+        const label = typeof item === "string" ? item : String(item.label ?? item.value ?? "");
         input.append(option(value, label));
       }
     }
