@@ -510,14 +510,17 @@ async function handleApi(request, env, url) {
   if (url.pathname === "/api/cloudflare/accounts" && request.method === "POST") {
     try {
       const body = await request.json();
-      const alias = String(body.alias || "").trim().toLowerCase();
-      const label = String(body.label || alias).trim();
       const accountId = String(body.account_id || "").trim();
       const token = String(body.api_token || "").trim();
 
-      if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(alias)) throw new Error("Aliasの形式が不正です。");
       if (!/^[a-fA-F0-9]{32}$/.test(accountId)) throw new Error("Cloudflare Account IDの形式が不正です。");
       if (!token) throw new Error("Cloudflare API Tokenは必須です。");
+
+      const label = String(body.label || "").trim() || `Cloudflare ${accountId.slice(0, 8)}`;
+      const existing = await env.DB.prepare(
+        "SELECT alias FROM cloudflare_accounts WHERE account_id = ?",
+      ).bind(accountId).first();
+      const alias = existing?.alias || `cf-${crypto.randomUUID()}`;
 
       await verifyCloudflareAccount(accountId, token);
       const encryptedToken = await encryptValue(env, token);
@@ -525,9 +528,8 @@ async function handleApi(request, env, url) {
       await env.DB.prepare(
         `INSERT INTO cloudflare_accounts(alias, label, account_id, encrypted_token, created_at, updated_at)
          VALUES(?, ?, ?, ?, ?, ?)
-         ON CONFLICT(alias) DO UPDATE SET
+         ON CONFLICT(account_id) DO UPDATE SET
            label = excluded.label,
-           account_id = excluded.account_id,
            encrypted_token = excluded.encrypted_token,
            updated_at = excluded.updated_at`,
       ).bind(alias, label, accountId, encryptedToken, now, now).run();
@@ -548,9 +550,14 @@ async function handleApi(request, env, url) {
 
   if (url.pathname === "/api/deployments" && request.method === "GET") {
     const rows = await env.DB.prepare(
-      `SELECT id, repository, ref, worker_name, account_alias, status, conclusion,
-              workflow_run_id, workflow_run_url, created_at, completed_at
-       FROM deployments ORDER BY created_at DESC LIMIT 50`,
+      `SELECT d.id, d.repository, d.ref, d.worker_name, d.account_alias,
+              COALESCE(c.label, '削除済みCloudflare Account') AS account_label,
+              d.status, d.conclusion, d.workflow_run_id, d.workflow_run_url,
+              d.created_at, d.completed_at
+       FROM deployments d
+       LEFT JOIN cloudflare_accounts c ON c.alias = d.account_alias
+       ORDER BY d.created_at DESC
+       LIMIT 50`,
     ).all();
     return json({ deployments: rows.results || [] });
   }
