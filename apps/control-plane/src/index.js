@@ -105,7 +105,7 @@ function assertSameOrigin(request) {
 
 async function masterKey(env) {
   if (!env.FACTORY_MASTER_KEY) throw new Error("FACTORY_MASTER_KEY is not configured.");
-  const bytes = base64ToBytes(String(env.FACTORY_MASTER_KEY).replace(/\\s+/g, ""));
+  const bytes = base64ToBytes(String(env.FACTORY_MASTER_KEY).replace(/\s+/g, ""));
   if (bytes.byteLength !== 32) throw new Error("FACTORY_MASTER_KEY must be a base64-encoded 32-byte key.");
   return crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
@@ -461,9 +461,10 @@ async function handleInternal(request, env, url) {
     }
 
     const payload = JSON.parse(await decryptValue(env, row.encrypted_payload));
-    await env.DB.prepare(
-      "UPDATE deployments SET status = 'running', claimed_at = ? WHERE id = ?",
+    const claimed = await env.DB.prepare(
+      "UPDATE deployments SET status = 'running', claimed_at = ? WHERE id = ? AND claimed_at IS NULL",
     ).bind(nowIso(), claim[1]).run();
+    if (!Number(claimed.meta?.changes || 0)) return json({ error: "job already claimed" }, 409);
     await audit(env, "deployment_claimed", { id: claim[1] });
     return json(payload);
   }
@@ -617,7 +618,10 @@ async function handleApi(request, env, url) {
   const accountDelete = url.pathname.match(/^\/api\/cloudflare\/accounts\/([^/]+)$/);
   if (accountDelete && request.method === "DELETE") {
     const alias = decodeURIComponent(accountDelete[1]);
-    await env.DB.prepare("DELETE FROM cloudflare_accounts WHERE alias = ?").bind(alias).run();
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM managed_values WHERE account_alias = ?").bind(alias),
+      env.DB.prepare("DELETE FROM cloudflare_accounts WHERE alias = ?").bind(alias),
+    ]);
     await audit(env, "cloudflare_account_deleted", { alias });
     return json({ ok: true });
   }
