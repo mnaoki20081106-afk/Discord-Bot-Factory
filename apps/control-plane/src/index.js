@@ -256,7 +256,8 @@ function normalizeSetup(manifest) {
         label: String(item.label || item.name || "設定"),
         required: item.required !== false,
         description: String(item.description || item.reason || ""),
-        path: String(item.path || ""),\n        url: String(item.url || ""),
+        path: String(item.path || ""),
+        url: String(item.url || ""),
       };
     });
   }
