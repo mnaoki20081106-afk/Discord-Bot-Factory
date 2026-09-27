@@ -14,7 +14,7 @@
       "binding": "DB"
     }
   ],
-  "vars": {
+  "triggers": {\n    "crons": ["*/15 * * * *"]\n  },\n  "vars": {
     "FACTORY_GITHUB_REPO": "mnaoki20081106-afk/Discord-Bot-Factory",
     "FACTORY_GITHUB_REF": "main",
     "ALLOWED_REPO_OWNER": "mnaoki20081106-afk"
