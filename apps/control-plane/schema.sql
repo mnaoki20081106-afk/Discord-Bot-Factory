@@ -25,6 +25,19 @@ CREATE TABLE IF NOT EXISTS managed_values (
   PRIMARY KEY(repository, account_alias, field_key)
 );
 
+CREATE TABLE IF NOT EXISTS worker_secret_state (
+  account_alias TEXT NOT NULL,
+  worker_name TEXT NOT NULL,
+  secret_keys_json TEXT NOT NULL DEFAULT '[]',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(account_alias, worker_name)
+);
+
+CREATE TABLE IF NOT EXISTS deployment_secret_sets (
+  deployment_id TEXT PRIMARY KEY,
+  secret_keys_json TEXT NOT NULL DEFAULT '[]'
+);
+
 CREATE TABLE IF NOT EXISTS deployments (
   id TEXT PRIMARY KEY,
   repository TEXT NOT NULL,
@@ -84,4 +97,14 @@ BEGIN
   UPDATE deployments
   SET encrypted_payload = ''
   WHERE id = NEW.id;
+END;
+
+
+CREATE TRIGGER IF NOT EXISTS deployments_discard_secret_set_on_failure
+AFTER UPDATE OF status ON deployments
+WHEN NEW.status IN ('failed', 'dispatch_failed', 'expired')
+     AND NEW.status != OLD.status
+BEGIN
+  DELETE FROM deployment_secret_sets
+  WHERE deployment_id = NEW.id;
 END;
