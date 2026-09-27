@@ -440,7 +440,12 @@ $("launchButton").addEventListener("click", async () => {
     if (field.generate) continue;
     const el = $("field-" + field.key);
     if (!el) continue;
-    fields[field.key] = field.type === "boolean" ? el.value === "true" : el.value;
+    if (field.type === "boolean") {
+      if (el.value === "") continue;
+      fields[field.key] = el.value === "true";
+    } else {
+      fields[field.key] = el.value;
+    }
   }
   const confirmed = Array.from(document.querySelectorAll("[data-requirement]:checked")).map((el) => el.dataset.requirement);
 
