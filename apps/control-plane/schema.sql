@@ -47,3 +47,23 @@ CREATE TABLE IF NOT EXISTS auth_attempts (
   blocked_until INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL
 );
+
+
+CREATE TRIGGER IF NOT EXISTS deployments_wipe_payload_on_claim
+AFTER UPDATE OF claimed_at ON deployments
+WHEN NEW.claimed_at IS NOT NULL AND OLD.claimed_at IS NULL
+BEGIN
+  UPDATE deployments
+  SET encrypted_payload = ''
+  WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS deployments_wipe_payload_on_terminal_status
+AFTER UPDATE OF status ON deployments
+WHEN NEW.status IN ('completed', 'failed', 'dispatch_failed', 'expired')
+     AND NEW.status != OLD.status
+BEGIN
+  UPDATE deployments
+  SET encrypted_payload = ''
+  WHERE id = NEW.id;
+END;
