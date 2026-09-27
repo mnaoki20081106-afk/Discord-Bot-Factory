@@ -1,0 +1,22 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "discord-bot-factory-control",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-25",
+  "workers_dev": true,
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB"
+    }
+  ],
+  "vars": {
+    "FACTORY_GITHUB_REPO": "mnaoki20081106-afk/Discord-Bot-Factory",
+    "FACTORY_GITHUB_REF": "main",
+    "ALLOWED_REPO_OWNER": "mnaoki20081106-afk"
+  }
+}
