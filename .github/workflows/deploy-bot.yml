@@ -74,7 +74,14 @@ jobs:
         env:
           FACTORY_ROOT: ${{ github.workspace }}
         run: |
-          scripts/cloudflare/deploy.sh             "$GITHUB_WORKSPACE/source"             "${{ steps.manifest.outputs.working_directory }}"             "${{ steps.manifest.outputs.name }}"             "${{ steps.manifest.outputs.wrangler_config }}"             "${{ steps.manifest.outputs.health_url }}"             '${{ steps.manifest.outputs.d1_migrations }}'
+          set -euo pipefail
+          bash scripts/cloudflare/deploy.sh \
+            "$GITHUB_WORKSPACE/source" \
+            "${{ steps.manifest.outputs.working_directory }}" \
+            "${{ steps.manifest.outputs.name }}" \
+            "${{ steps.manifest.outputs.wrangler_config }}" \
+            "${{ steps.manifest.outputs.health_url }}" \
+            '${{ steps.manifest.outputs.d1_migrations }}'
 
       - name: Persist auto-provisioned Wrangler IDs
         working-directory: source
