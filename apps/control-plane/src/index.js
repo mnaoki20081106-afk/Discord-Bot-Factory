@@ -497,6 +497,20 @@ async function commitDeploymentSecretState(env, deploymentId) {
   return true;
 }
 
+async function cloudflareWorkerExists(accountId, token, workerName) {
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts`,
+    { headers: { authorization: `Bearer ${token}` } },
+  );
+  if (!response.ok) {
+    throw new Error(`CloudflareのWorker一覧を取得できませんでした (${response.status})`);
+  }
+
+  const payload = await response.json();
+  const scripts = Array.isArray(payload?.result) ? payload.result : [];
+  return scripts.some((script) => String(script?.id || "") === workerName);
+}
+
 async function verifyCloudflareAccount(accountId, token) {
   const response = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts`,
@@ -827,6 +841,7 @@ async function handleApi(request, env, url) {
         "SELECT alias, account_id, encrypted_token FROM cloudflare_accounts WHERE alias = ?",
       ).bind(accountAlias).first();
       if (!account) throw new Error("選択したCloudflare Accountが登録されていません。");
+      const cloudflareToken = await decryptValue(env, account.encrypted_token);
 
       const manifest = await fetchManifest(env, github.value, repository, ref);
       if (manifest.provider && manifest.provider !== "cloudflare") throw new Error("このBOTはCloudflare向けではありません。");
@@ -851,6 +866,16 @@ async function handleApi(request, env, url) {
       if (previousWorker && previousWorker.worker_name !== workerName) {
         throw new Error(
           `Worker名の変更を検知しました。旧Worker「${previousWorker.worker_name}」との二重起動を防ぐため停止しました。`,
+        );
+      }
+
+      if (!previousWorker && await cloudflareWorkerExists(
+        account.account_id,
+        cloudflareToken,
+        workerName,
+      )) {
+        throw new Error(
+          `Cloudflare上に同名Worker「${workerName}」が既に存在します。Factory管理外Workerの上書きを防ぐため停止しました。`,
         );
       }
 
@@ -923,7 +948,6 @@ async function handleApi(request, env, url) {
         throw new Error("FACTORY_GITHUB_REF が不正です。");
       }
 
-      const cloudflareToken = await decryptValue(env, account.encrypted_token);
       const id = crypto.randomUUID();
       const createdAt = nowIso();
       const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
