@@ -3,19 +3,9 @@ name: Deploy Bot
 on:
   workflow_dispatch:
     inputs:
-      source_repository:
-        description: "Existing bot repository (owner/repo)"
+      job_id:
+        description: "Control Plane deployment job ID"
         required: true
-        type: string
-      source_ref:
-        description: "Branch to deploy"
-        required: true
-        default: "main"
-        type: string
-      secret_bundle_name:
-        description: "Factory secret containing bot runtime secrets as JSON"
-        required: false
-        default: ""
         type: string
       confirm:
         description: "Type DEPLOY"
@@ -26,112 +16,64 @@ permissions:
   contents: read
 
 concurrency:
-  group: bot-factory-${{ inputs.source_repository }}
+  group: bot-factory-${{ inputs.job_id }}
   cancel-in-progress: false
 
 jobs:
-  prepare:
+  deploy:
     if: ${{ inputs.confirm == 'DEPLOY' }}
     runs-on: ubuntu-latest
-    outputs:
-      name: ${{ steps.manifest.outputs.name }}
-      cloudflare_account: ${{ steps.manifest.outputs.cloudflare_account }}
-      cloudflare_account_id: ${{ steps.account.outputs.cloudflare_account_id }}
-      cloudflare_token_secret: ${{ steps.account.outputs.cloudflare_token_secret }}
-      working_directory: ${{ steps.manifest.outputs.working_directory }}
-      wrangler_config: ${{ steps.manifest.outputs.wrangler_config }}
-      health_url: ${{ steps.manifest.outputs.health_url }}
-      d1_migrations: ${{ steps.manifest.outputs.d1_migrations }}
+    environment: production
 
     steps:
-      - name: Require GitHub source token
-        env:
-          FACTORY_GITHUB_PAT: ${{ secrets.FACTORY_GITHUB_PAT }}
-        run: |
-          set -euo pipefail
-          : "${FACTORY_GITHUB_PAT:?FACTORY_GITHUB_PAT is not configured}"
-
       - name: Checkout Factory
         uses: actions/checkout@v6
-        with:
-          path: factory
-
-      - name: Checkout bot repository
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ inputs.source_repository }}
-          ref: ${{ inputs.source_ref }}
-          token: ${{ secrets.FACTORY_GITHUB_PAT }}
-          path: source
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Claim deployment job
+        id: claim
+        env:
+          FACTORY_CONTROL_PLANE_URL: ${{ vars.FACTORY_CONTROL_PLANE_URL }}
+          FACTORY_CONTROL_PLANE_KEY: ${{ secrets.FACTORY_CONTROL_PLANE_KEY }}
+        run: |
+          set -euo pipefail
+          : "${FACTORY_CONTROL_PLANE_URL:?FACTORY_CONTROL_PLANE_URL is not configured}"
+          : "${FACTORY_CONTROL_PLANE_KEY:?FACTORY_CONTROL_PLANE_KEY is not configured}"
+
+          job_file="$RUNNER_TEMP/factory-job.json"
+          curl -fsS             -X POST             -H "Authorization: Bearer $FACTORY_CONTROL_PLANE_KEY"             "$FACTORY_CONTROL_PLANE_URL/api/internal/jobs/${{ inputs.job_id }}/claim"             > "$job_file"
+
+          node scripts/claim-job.mjs "$job_file"
+          rm -f "$job_file"
+
+      - name: Checkout bot repository
+        env:
+          GH_TOKEN: ${{ env.FACTORY_GITHUB_PAT }}
+          SOURCE_REPOSITORY: ${{ steps.claim.outputs.repository }}
+          SOURCE_REF: ${{ steps.claim.outputs.ref }}
+        run: |
+          set -euo pipefail
+          gh repo clone "$SOURCE_REPOSITORY" source -- --branch "$SOURCE_REF" --depth 1
 
       - name: Read deployment manifest
         id: manifest
         run: |
-          node factory/scripts/read-manifest.mjs             "$GITHUB_WORKSPACE/source"             "${{ inputs.source_repository }}" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve Cloudflare account
-        id: account
-        env:
-          CLOUDFLARE_ACCOUNTS_JSON: ${{ vars.CLOUDFLARE_ACCOUNTS_JSON }}
-        run: |
-          node factory/scripts/cloudflare/resolve-account.mjs             "${{ steps.manifest.outputs.cloudflare_account }}" >> "$GITHUB_OUTPUT"
-
-      - name: Deployment plan
-        run: |
-          {
-            echo "### Bot Factory deployment plan"
-            echo "- Repository: `${{ inputs.source_repository }}@${{ inputs.source_ref }}`"
-            echo "- Worker: `${{ steps.manifest.outputs.name }}`"
-            echo "- Cloudflare account alias: `${{ steps.manifest.outputs.cloudflare_account }}`"
-            echo "- Working directory: `${{ steps.manifest.outputs.working_directory }}`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  deploy:
-    needs: prepare
-    runs-on: ubuntu-latest
-    environment: production
-    env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ needs.prepare.outputs.cloudflare_account_id }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets[needs.prepare.outputs.cloudflare_token_secret] }}
-      BOT_SECRET_BUNDLE: ${{ inputs.secret_bundle_name != '' && secrets[inputs.secret_bundle_name] || '' }}
-
-    steps:
-      - name: Require selected Cloudflare credentials
-        run: |
-          set -euo pipefail
-          : "${CLOUDFLARE_ACCOUNT_ID:?Selected Cloudflare account ID is missing}"
-          : "${CLOUDFLARE_API_TOKEN:?Selected Cloudflare API token secret is missing}"
-
-      - name: Checkout Factory
-        uses: actions/checkout@v6
-        with:
-          path: factory
-
-      - name: Checkout bot repository
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ inputs.source_repository }}
-          ref: ${{ inputs.source_ref }}
-          token: ${{ secrets.FACTORY_GITHUB_PAT }}
-          path: source
-          persist-credentials: true
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
+          node scripts/read-manifest.mjs             "$GITHUB_WORKSPACE/source"             "${{ steps.claim.outputs.repository }}" >> "$GITHUB_OUTPUT"
 
       - name: Deploy and provision Cloudflare resources
         env:
-          FACTORY_ROOT: ${{ github.workspace }}/factory
+          FACTORY_ROOT: ${{ github.workspace }}
         run: |
-          factory/scripts/cloudflare/deploy.sh             "$GITHUB_WORKSPACE/source"             "${{ needs.prepare.outputs.working_directory }}"             "${{ needs.prepare.outputs.name }}"             "${{ needs.prepare.outputs.wrangler_config }}"             "${{ needs.prepare.outputs.health_url }}"             '${{ needs.prepare.outputs.d1_migrations }}'
+          scripts/cloudflare/deploy.sh             "$GITHUB_WORKSPACE/source"             "${{ steps.manifest.outputs.working_directory }}"             "${{ steps.manifest.outputs.name }}"             "${{ steps.manifest.outputs.wrangler_config }}"             "${{ steps.manifest.outputs.health_url }}"             '${{ steps.manifest.outputs.d1_migrations }}'
 
       - name: Persist auto-provisioned Wrangler IDs
         working-directory: source
+        env:
+          GH_TOKEN: ${{ env.FACTORY_GITHUB_PAT }}
+          SOURCE_REF: ${{ steps.claim.outputs.ref }}
         shell: bash
         run: |
           set -euo pipefail
@@ -147,18 +89,28 @@ jobs:
             exit 0
           fi
 
+          gh auth setup-git
           git config user.name "discord-bot-factory[bot]"
           git config user.email "discord-bot-factory[bot]@users.noreply.github.com"
           git add -- "${changed[@]}"
           git commit -m "chore: persist Cloudflare resource bindings"
-          git push origin "HEAD:${{ inputs.source_ref }}"
+          git push origin "HEAD:$SOURCE_REF"
 
-      - name: Summary
+      - name: Deployment summary
         run: |
           {
             echo "### Cloudflare deployment complete"
-            echo "- Worker: `${{ needs.prepare.outputs.name }}`"
-            echo "- Account alias: `${{ needs.prepare.outputs.cloudflare_account }}`"
-            echo "- Cloudflare account ID: `${{ needs.prepare.outputs.cloudflare_account_id }}`"
-            echo "- Wrangler-declared resources were provisioned/linked during deployment."
+            echo "- Worker: `${{ steps.manifest.outputs.name }}`"
+            echo "- Account alias: `${{ steps.claim.outputs.cloudflare_account_alias }}`"
+            echo "- Account ID: `${{ steps.claim.outputs.cloudflare_account_id }}`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report result to Control Plane
+        if: ${{ always() }}
+        env:
+          FACTORY_CONTROL_PLANE_URL: ${{ vars.FACTORY_CONTROL_PLANE_URL }}
+          FACTORY_CONTROL_PLANE_KEY: ${{ secrets.FACTORY_CONTROL_PLANE_KEY }}
+          CONCLUSION: ${{ job.status }}
+        run: |
+          set +e
+          curl -fsS             -X POST             -H "Authorization: Bearer $FACTORY_CONTROL_PLANE_KEY"             -H "Content-Type: application/json"             --data "{\"conclusion\":\"$CONCLUSION\"}"             "$FACTORY_CONTROL_PLANE_URL/api/internal/jobs/${{ inputs.job_id }}/result"             >/dev/null
