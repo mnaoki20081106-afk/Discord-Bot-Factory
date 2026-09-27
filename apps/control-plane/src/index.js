@@ -301,7 +301,7 @@ function normalizeSetup(manifest) {
         required: item.required !== false,
         description: String(item.description || item.reason || ""),
         path: String(item.path || ""),
-        url: normalizeHttpUrl(item.url, `Discord設定 ${item.label || item.name || id}`),
+        url: normalizeHttpUrl(item.url, `Discord設定 ${item.label || item.name || item.id || `${prefix}-${index}`}`),
       };
     });
   }
