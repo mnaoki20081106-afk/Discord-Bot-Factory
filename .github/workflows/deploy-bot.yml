@@ -1,0 +1,267 @@
+name: Deploy Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: "Bot repository (owner/repo)"
+        required: true
+        type: string
+      source_ref:
+        description: "Branch or tag"
+        required: true
+        default: "main"
+        type: string
+      bot_name:
+        description: "Deployment name: lowercase letters, numbers, hyphen"
+        required: true
+        type: string
+      working_directory:
+        description: "Bot directory in the source repository"
+        required: true
+        default: "."
+        type: string
+      runtime:
+        description: "Runtime"
+        required: true
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - worker
+          - node
+      provider:
+        description: "Provider"
+        required: true
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - cloudflare
+          - oracle
+      wrangler_config:
+        description: "Wrangler config filename or auto"
+        required: true
+        default: "auto"
+        type: string
+      secret_bundle_name:
+        description: "Factory Actions secret containing the bot JSON secrets"
+        required: false
+        default: ""
+        type: string
+      start_command:
+        description: "Optional Oracle container command override"
+        required: false
+        default: ""
+        type: string
+      health_url:
+        description: "Optional HTTP health URL after Cloudflare deploy"
+        required: false
+        default: ""
+        type: string
+      confirm:
+        description: "Type DEPLOY"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.bot_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: ${{ inputs.confirm == 'DEPLOY' }}
+    runs-on: ubuntu-latest
+    outputs:
+      provider: ${{ steps.select.outputs.provider }}
+      runtime: ${{ steps.select.outputs.runtime }}
+
+    steps:
+      - name: Validate deployment name
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${{ inputs.bot_name }}" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]; then
+            echo "::error::Invalid bot_name."
+            exit 1
+          fi
+
+      - name: Require Factory GitHub token
+        env:
+          FACTORY_GITHUB_PAT: ${{ secrets.FACTORY_GITHUB_PAT }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${FACTORY_GITHUB_PAT:-}" ]]; then
+            echo "::error::FACTORY_GITHUB_PAT is not configured in Discord-Bot-Factory."
+            exit 1
+          fi
+
+      - name: Checkout Factory
+        uses: actions/checkout@v6
+        with:
+          path: factory
+
+      - name: Checkout bot source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.FACTORY_GITHUB_PAT }}
+          path: source
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Select provider
+        id: select
+        run: |
+          node factory/scripts/select-provider.mjs             "${{ inputs.provider }}"             "${{ inputs.runtime }}"             "$GITHUB_WORKSPACE/source"             "${{ inputs.working_directory }}" >> "$GITHUB_OUTPUT"
+
+      - name: Plan summary
+        run: |
+          {
+            echo "### Deployment plan"
+            echo "- Bot: `${{ inputs.bot_name }}`"
+            echo "- Source: `${{ inputs.source_repository }}@${{ inputs.source_ref }}`"
+            echo "- Runtime: `${{ steps.select.outputs.runtime }}`"
+            echo "- Provider: `${{ steps.select.outputs.provider }}`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cloudflare:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.provider == 'cloudflare' }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      FACTORY_GITHUB_PAT: ${{ secrets.FACTORY_GITHUB_PAT }}
+      BOT_SECRET_BUNDLE: ${{ inputs.secret_bundle_name != '' && secrets[inputs.secret_bundle_name] || '' }}
+
+    steps:
+      - name: Checkout Factory
+        uses: actions/checkout@v6
+        with:
+          path: factory
+
+      - name: Checkout bot source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.FACTORY_GITHUB_PAT }}
+          path: source
+          persist-credentials: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Require Cloudflare credentials
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is not configured}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is not configured}"
+
+      - name: Deploy to Cloudflare
+        env:
+          FACTORY_ROOT: ${{ github.workspace }}/factory
+        run: |
+          factory/scripts/cloudflare/deploy.sh             "$GITHUB_WORKSPACE/source"             "${{ inputs.working_directory }}"             "${{ inputs.bot_name }}"             "${{ inputs.wrangler_config }}"             "${{ inputs.health_url }}"
+
+      - name: Persist Wrangler-provisioned bindings
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t changed < <(
+            git status --porcelain |
+              awk '{print $2}' |
+              grep -E '(^|/)wrangler\.(jsonc|json|toml)$' || true
+          )
+
+          if [[ "${#changed[@]}" -eq 0 ]]; then
+            echo "No Wrangler binding changes to persist."
+            exit 0
+          fi
+
+          git config user.name "discord-bot-factory[bot]"
+          git config user.email "discord-bot-factory[bot]@users.noreply.github.com"
+          git add -- "${changed[@]}"
+          git commit -m "chore: persist Cloudflare resource bindings"
+          git push origin "HEAD:${{ inputs.source_ref }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Cloudflare deployment complete"
+            echo "- Bot: `${{ inputs.bot_name }}`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  oracle:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.provider == 'oracle' }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_API_PRIVATE_KEY: ${{ secrets.OCI_API_PRIVATE_KEY }}
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_COMPARTMENT_OCID: ${{ secrets.OCI_COMPARTMENT_OCID }}
+      BOT_FACTORY_SSH_PRIVATE_KEY: ${{ secrets.BOT_FACTORY_SSH_PRIVATE_KEY }}
+      BOT_SECRET_BUNDLE: ${{ inputs.secret_bundle_name != '' && secrets[inputs.secret_bundle_name] || '' }}
+
+    steps:
+      - name: Checkout Factory
+        uses: actions/checkout@v6
+        with:
+          path: factory
+
+      - name: Checkout bot source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.FACTORY_GITHUB_PAT }}
+          path: source
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install OCI CLI in isolated environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/oci-cli"
+          "$RUNNER_TEMP/oci-cli/bin/pip" install --upgrade pip oci-cli
+          echo "$RUNNER_TEMP/oci-cli/bin" >> "$GITHUB_PATH"
+
+      - name: Configure OCI
+        run: factory/scripts/oracle/configure.sh
+
+      - name: Ensure shared Oracle host exists
+        id: host
+        run: factory/scripts/oracle/ensure-host.sh
+
+      - name: Deploy bot container
+        env:
+          FACTORY_ROOT: ${{ github.workspace }}/factory
+        run: |
+          factory/scripts/oracle/deploy.sh             "$GITHUB_WORKSPACE/source"             "${{ inputs.working_directory }}"             "${{ inputs.bot_name }}"             "${{ steps.host.outputs.public_ip }}"             "${{ inputs.start_command }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Oracle deployment complete"
+            echo "- Bot: `${{ inputs.bot_name }}`"
+            echo "- Shared host: `${{ steps.host.outputs.instance_id }}`"
+            echo "- Container restart policy: `unless-stopped`"
+          } >> "$GITHUB_STEP_SUMMARY"
