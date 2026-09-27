@@ -350,6 +350,15 @@ async function loadHistory() {
 
     const right = element("div");
     right.append(element("span", "status " + row.status, row.conclusion || row.status));
+
+    const terminal = ["completed", "failed", "dispatch_failed", "expired"].includes(row.status);
+    if (terminal && Number(row.can_restart || 0) === 1) {
+      const restart = element("button", "ghost", "再起動");
+      restart.type = "button";
+      restart.dataset.restartDeployment = row.id;
+      right.append(restart);
+    }
+
     if (row.workflow_run_url) {
       const link = element("a", "ghost", "Actions");
       link.href = row.workflow_run_url;
@@ -512,6 +521,33 @@ $("launchButton").addEventListener("click", async () => {
     setStateText("launchState", error.message, "error");
   } finally {
     updateLaunchState();
+  }
+});
+
+$("historyList").addEventListener("click", async (event) => {
+  const id = event.target && event.target.dataset ? event.target.dataset.restartDeployment : "";
+  if (!id) return;
+
+  const button = event.target;
+  button.disabled = true;
+  const originalText = button.textContent;
+  button.textContent = "再起動中…";
+  setStateText("historyState", "保存済み設定で再起動しています…");
+
+  try {
+    const data = await api("/api/deployments/" + encodeURIComponent(id) + "/restart", {
+      method: "POST",
+      body: "{}",
+    });
+    setStateText("historyState", "再起動を開始しました。", "good");
+    await loadHistory();
+    if (data.deployment?.id) {
+      setTimeout(() => pollDeployment(data.deployment.id), 2500);
+    }
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = originalText;
+    setStateText("historyState", error.message, "error");
   }
 });
 
