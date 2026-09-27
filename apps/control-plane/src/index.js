@@ -499,9 +499,9 @@ async function handleInternal(request, env, url) {
 
     const payload = JSON.parse(await decryptValue(env, row.encrypted_payload));
     const claimed = await env.DB.prepare(
-      \`UPDATE deployments
+      `UPDATE deployments
        SET status = 'running', claimed_at = ?, workflow_run_id = ?, workflow_run_url = ?
-       WHERE id = ? AND claimed_at IS NULL\`,
+       WHERE id = ? AND claimed_at IS NULL`,
     ).bind(nowIso(), workflowRunId, workflowRunUrl, claim[1]).run();
     if (!Number(claimed.meta?.changes || 0)) return json({ error: "job already claimed" }, 409);
     await audit(env, "deployment_claimed", { id: claim[1], workflow_run_id: workflowRunId });
@@ -518,9 +518,9 @@ async function handleInternal(request, env, url) {
     if (!/^\d+$/.test(workflowRunId)) return json({ error: "invalid workflow run id" }, 400);
 
     const updated = await env.DB.prepare(
-      \`UPDATE deployments
+      `UPDATE deployments
        SET status = ?, conclusion = ?, completed_at = ?, workflow_run_url = ?
-       WHERE id = ? AND workflow_run_id = ? AND status = 'running'\`,
+       WHERE id = ? AND workflow_run_id = ? AND status = 'running'`,
     ).bind(status, conclusion, nowIso(), workflowRunUrl, result[1], workflowRunId).run();
 
     if (!Number(updated.meta?.changes || 0)) {
