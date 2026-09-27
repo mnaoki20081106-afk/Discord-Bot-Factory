@@ -113,9 +113,9 @@ try {
 set -euo pipefail
 printf '%s\\n' "$*" >> "$FACTORY_TEST_ARGS"
 args=("$@")
-for ((i=0; i<${#args[@]}; i++)); do
-  if [[ "${args[$i]}" == "--secrets-file" ]]; then
-    cp "${args[$((i+1))]}" "$FACTORY_TEST_SECRETS"
+for ((i=0; i<\${#args[@]}; i++)); do
+  if [[ "\${args[$i]}" == "--secrets-file" ]]; then
+    cp "\${args[$((i+1))]}" "$FACTORY_TEST_SECRETS"
   fi
 done
 `,
