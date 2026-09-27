@@ -10,7 +10,8 @@ function sanitizeName(value) {
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 63);
+    .slice(0, 63)
+    .replace(/-+$/g, "");
 
   if (!name) throw new Error("Could not derive a valid Worker name.");
   return name;
