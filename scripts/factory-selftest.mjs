@@ -121,9 +121,11 @@ for ((i=0; i<\${#args[@]}; i++)); do
     cp "\${args[$((i+1))]}" "$FACTORY_TEST_SECRETS"
   fi
 done
-if [[ "\${args[0]:-}" == "wrangler" && "\${args[1]:-}" == "secret" && "\${args[2]:-}" == "bulk" ]]; then
-  cp "\${args[3]}" "$FACTORY_TEST_SECRET_DELETES"
-fi
+for ((i=0; i<\${#args[@]}-2; i++)); do
+  if [[ "\${args[$i]}" == "secret" && "\${args[$((i+1))]}" == "bulk" ]]; then
+    cp "\${args[$((i+2))]}" "$FACTORY_TEST_SECRET_DELETES"
+  fi
+done
 `,
     { mode: 0o755 },
   );
