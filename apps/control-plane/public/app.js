@@ -451,8 +451,15 @@ $("accountList").addEventListener("click", async (event) => {
   if (!alias) return;
   const account = state.accounts.find((item) => item.alias === alias);
   if (!confirm((account?.label || "このCloudflare Account") + " を削除しますか？")) return;
-  await api("/api/cloudflare/accounts/" + encodeURIComponent(alias), { method: "DELETE", body: "{}" });
-  await loadAccounts();
+
+  setStateText("accountFormState", "削除しています…");
+  try {
+    await api("/api/cloudflare/accounts/" + encodeURIComponent(alias), { method: "DELETE", body: "{}" });
+    setStateText("accountFormState", "削除しました。", "good");
+    await loadAccounts();
+  } catch (error) {
+    setStateText("accountFormState", error.message, "error");
+  }
 });
 
 $("repoSelect").addEventListener("change", () => {
