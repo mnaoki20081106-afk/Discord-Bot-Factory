@@ -192,6 +192,18 @@ function validateRepoName(value, env) {
   return repo;
 }
 
+function normalizeWorkerName(value) {
+  const name = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 63)
+    .replace(/-+$/g, "");
+
+  if (!name) throw new Error("有効なWorker名を作成できません。");
+  return name;
+}
+
 async function fetchManifest(env, token, repository, ref = "main") {
   const repo = validateRepoName(repository, env);
   const response = await githubFetch(
@@ -640,7 +652,7 @@ async function handleApi(request, env, url) {
       const setup = normalizeSetup(manifest);
       return json({
         manifest: {
-          name: manifest.name || repository.split("/")[1],
+          name: normalizeWorkerName(manifest.name || repository.split("/")[1]),
           provider: manifest.provider || "cloudflare",
           runtime: manifest.runtime || "worker",
           working_directory: manifest.working_directory || ".",
@@ -750,6 +762,34 @@ async function handleApi(request, env, url) {
       if (manifest.runtime && manifest.runtime !== "worker") throw new Error("このBOTはWorker runtimeではありません。");
 
       const setup = normalizeSetup(manifest);
+      const workerName = normalizeWorkerName(manifest.name || repository.split("/")[1]);
+
+      const activeDeployment = await env.DB.prepare(
+        `SELECT id
+         FROM deployments
+         WHERE account_alias = ?
+           AND worker_name = ?
+           AND status IN ('queued', 'dispatched', 'running')
+         LIMIT 1`,
+      ).bind(account.alias, workerName).first();
+      if (activeDeployment) {
+        throw new Error("このWorkerは既に起動処理中です。完了してから再実行してください。");
+      }
+
+      const conflictingDeployment = await env.DB.prepare(
+        `SELECT repository
+         FROM deployments
+         WHERE account_alias = ?
+           AND worker_name = ?
+           AND repository != ?
+           AND status = 'completed'
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      ).bind(account.alias, workerName, repository).first();
+      if (conflictingDeployment) {
+        throw new Error(`Worker名「${workerName}」は別のBOTリポジトリで使用済みです。`);
+      }
+
       const requiredRequirements = [
         ...setup.discord.intents,
         ...setup.discord.permissions,
@@ -797,7 +837,7 @@ async function handleApi(request, env, url) {
         id,
         repository,
         ref,
-        String(manifest.name || repository.split("/")[1]),
+        workerName,
         account.alias,
         encryptedPayload,
         createdAt,
