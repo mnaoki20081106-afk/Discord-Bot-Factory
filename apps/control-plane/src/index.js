@@ -1099,10 +1099,13 @@ async function handleApi(request, env, url) {
     const rows = await env.DB.prepare(
       `SELECT d.id, d.repository, d.ref, d.worker_name, d.account_alias,
               COALESCE(c.label, '削除済みCloudflare Account') AS account_label,
+              CASE WHEN p.repository IS NULL THEN 0 ELSE 1 END AS can_restart,
               d.status, d.conclusion, d.workflow_run_id, d.workflow_run_url,
               d.created_at, d.completed_at
        FROM deployments d
        LEFT JOIN cloudflare_accounts c ON c.alias = d.account_alias
+       LEFT JOIN deployment_profiles p
+         ON p.repository = d.repository AND p.account_alias = d.account_alias
        ORDER BY d.created_at DESC
        LIMIT 50`,
     ).all();
