@@ -1,0 +1,63 @@
+name: Create Bot Repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository_name:
+        description: "New GitHub repository name"
+        required: true
+        type: string
+      visibility:
+        description: "Repository visibility"
+        required: true
+        default: "private"
+        type: choice
+        options:
+          - private
+          - public
+      description:
+        description: "Repository description"
+        required: false
+        default: "Discord bot managed by Discord-Bot-Factory"
+        type: string
+      confirm:
+        description: "Type CREATE"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  create:
+    if: ${{ inputs.confirm == 'CREATE' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Require repository-management token
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GITHUB_PAT }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::FACTORY_GITHUB_PAT is not configured."
+            exit 1
+          fi
+
+      - name: Create repository
+        id: create
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GITHUB_PAT }}
+        run: |
+          scripts/create-repository.sh             "${{ inputs.repository_name }}"             "${{ inputs.visibility }}"             "${{ inputs.description }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Repository created"
+            echo "- `${{ steps.create.outputs.repository }}`"
+            echo ""
+            echo "The repository is ready for bot implementation and Factory deployment."
+          } >> "$GITHUB_STEP_SUMMARY"
