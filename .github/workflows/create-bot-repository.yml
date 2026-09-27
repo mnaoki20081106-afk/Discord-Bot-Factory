@@ -7,6 +7,14 @@ on:
         description: "New GitHub repository name"
         required: true
         type: string
+      runtime:
+        description: "Starter type"
+        required: true
+        default: "node"
+        type: choice
+        options:
+          - node
+          - worker
       visibility:
         description: "Repository visibility"
         required: true
@@ -18,7 +26,7 @@ on:
       description:
         description: "Repository description"
         required: false
-        default: "Discord bot managed by Discord-Bot-Factory"
+        default: "Discord bot created by Discord-Bot-Factory"
         type: string
       confirm:
         description: "Type CREATE"
@@ -53,11 +61,19 @@ jobs:
         run: |
           scripts/create-repository.sh             "${{ inputs.repository_name }}"             "${{ inputs.visibility }}"             "${{ inputs.description }}"
 
+      - name: Scaffold repository
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GITHUB_PAT }}
+          FACTORY_ROOT: ${{ github.workspace }}
+        run: |
+          scripts/scaffold-repository.sh             "${{ steps.create.outputs.repository }}"             "${{ inputs.runtime }}"             "${{ inputs.repository_name }}"
+
       - name: Summary
         run: |
           {
-            echo "### Repository created"
-            echo "- `${{ steps.create.outputs.repository }}`"
+            echo "### Bot created"
+            echo "- Repository: `${{ steps.create.outputs.repository }}`"
+            echo "- Starter: `${{ inputs.runtime }}`"
             echo ""
-            echo "The repository is ready for bot implementation and Factory deployment."
+            echo "Factory work is complete. Deployment and operation are intentionally separate."
           } >> "$GITHUB_STEP_SUMMARY"
