@@ -19,10 +19,10 @@ if [[ ! -d "$WORKDIR" ]]; then
   exit 1
 fi
 
-if [[ -f "$SOURCE_ROOT/package-lock.json" && -f "$SOURCE_ROOT/package.json" ]]; then
-  (cd "$SOURCE_ROOT" && npm ci)
-elif [[ -f "$WORKDIR/package-lock.json" && -f "$WORKDIR/package.json" ]]; then
+if [[ -f "$WORKDIR/package-lock.json" && -f "$WORKDIR/package.json" ]]; then
   (cd "$WORKDIR" && npm ci)
+elif [[ -f "$SOURCE_ROOT/package-lock.json" && -f "$SOURCE_ROOT/package.json" ]]; then
+  (cd "$SOURCE_ROOT" && npm ci)
 elif [[ -f "$WORKDIR/package.json" ]]; then
   (cd "$WORKDIR" && npm install)
 fi
@@ -45,12 +45,12 @@ cd "$WORKDIR"
 # to a different Cloudflare account than bot-factory.json requested.
 if [[ "$WRANGLER_CONFIG" == *.toml ]]; then
   if grep -Eq '^[[:space:]]*account_id[[:space:]]*=' "$WRANGLER_CONFIG"; then
-    echo "::error::Remove account_id from $WRANGLER_CONFIG. Factory selects the account through CLOUDFLARE_ACCOUNTS_JSON."
+    echo "::error::Remove account_id from $WRANGLER_CONFIG. Factory selects the account from the Control Plane."
     exit 1
   fi
 else
   if grep -Eq '"account_id"[[:space:]]*:' "$WRANGLER_CONFIG"; then
-    echo "::error::Remove account_id from $WRANGLER_CONFIG. Factory selects the account through CLOUDFLARE_ACCOUNTS_JSON."
+    echo "::error::Remove account_id from $WRANGLER_CONFIG. Factory selects the account from the Control Plane."
     exit 1
   fi
 fi
