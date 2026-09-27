@@ -312,6 +312,9 @@ function normalizeSetup(manifest) {
       if (typeof item === "string") {
         return { id: `${prefix}-${index}`, label: item, required: true, description: "" };
       }
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new Error(`Discord設定 ${prefix}[${index}] の形式が不正です。`);
+      }
       return {
         id: String(item.id || `${prefix}-${index}`),
         label: String(item.label || item.name || "設定"),
