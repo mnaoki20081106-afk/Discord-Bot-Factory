@@ -25,6 +25,14 @@ CREATE TABLE IF NOT EXISTS managed_values (
   PRIMARY KEY(repository, account_alias, field_key)
 );
 
+CREATE TABLE IF NOT EXISTS deployment_profiles (
+  repository TEXT NOT NULL,
+  account_alias TEXT NOT NULL,
+  encrypted_inputs TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(repository, account_alias)
+);
+
 CREATE TABLE IF NOT EXISTS worker_secret_state (
   account_alias TEXT NOT NULL,
   worker_name TEXT NOT NULL,
