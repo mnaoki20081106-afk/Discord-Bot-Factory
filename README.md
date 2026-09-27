@@ -1,23 +1,28 @@
 # Discord Bot Factory
 
-Central deployment factory for Discord bots.
+Discord-Bot-Factory creates new Discord bot repositories and seeds them with a starter codebase.
 
-## Goals
+## Scope
 
-- Keep deployment automation out of individual bot repositories.
-- Deploy Worker-based bots to Cloudflare Workers.
-- Deploy persistent Node/Docker bots to a shared Oracle Cloud Always Free host.
-- Keep provider credentials in this repository only.
-- Reuse infrastructure instead of repeating dashboard setup for every bot.
-- Allow new bot repositories to be created from GitHub Actions when a suitable PAT is configured.
+Factory does:
 
-## Provider selection
+- create a new GitHub repository;
+- choose a starter type: persistent Node bot or Cloudflare Worker bot;
+- copy the matching template into the new repository;
+- replace template placeholders;
+- make the initial commit and push it.
 
-`provider=auto`:
+Factory does **not**:
 
-- Wrangler project -> Cloudflare
-- Node/Docker project -> Oracle Cloud
+- deploy the bot;
+- start or stop the bot;
+- host the bot;
+- configure Cloudflare or Oracle;
+- monitor uptime;
+- restart crashed processes;
+- manage production secrets;
+- operate an existing bot after creation.
 
-Cloudflare-only APIs such as Durable Objects and D1 are not treated as portable to Oracle.
+After the initial repository is created and scaffolded, responsibility moves to that bot's own repository and its own deployment/operations setup.
 
-See [SETUP.md](docs/SETUP.md) for the one-time credential setup.
+See [SETUP.md](docs/SETUP.md) for the one-time GitHub token setup.
