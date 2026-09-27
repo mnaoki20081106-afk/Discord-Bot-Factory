@@ -225,7 +225,7 @@ function fieldsValid() {
   });
 }
 function canLaunch() {
-  return Boolean(state.manifest && $("accountSelect").value && fieldsValid() && requiredRequirementsChecked());
+  return Boolean(state.repository && state.ref && state.manifest && $("accountSelect").value && fieldsValid() && requiredRequirementsChecked());
 }
 function updateSteps() {
   const hasRepo = Boolean(state.manifest);
@@ -256,12 +256,21 @@ function updateLaunchState() {
 }
 
 async function loadManifest() {
-  const selected = $("repoSelect").selectedOptions[0];
   state.repository = $("repoSelect").value;
-  if (!state.repository) return;
-
-  $("repoRef").value = (selected && selected.dataset.ref) || "main";
   state.ref = $("repoRef").value.trim() || "main";
+
+  if (!state.repository) {
+    state.manifest = null;
+    state.setup = null;
+    $("accountStep").classList.add("disabled-card");
+    $("discordStep").classList.add("disabled-card");
+    $("launchStep").classList.add("disabled-card");
+    clear($("dynamicFields"));
+    clear($("discordRequirements"));
+    setStateText("manifestState", "リポジトリを選択するとBOTのセットアップ情報を読み込みます。");
+    updateLaunchState();
+    return;
+  }
   setStateText("manifestState", "bot-factory.json を読み込んでいます…");
 
   try {
@@ -413,7 +422,11 @@ $("accountList").addEventListener("click", async (event) => {
   await loadAccounts();
 });
 
-$("repoSelect").addEventListener("change", loadManifest);
+$("repoSelect").addEventListener("change", () => {
+  const selected = $("repoSelect").selectedOptions[0];
+  $("repoRef").value = (selected && selected.dataset.ref) || "main";
+  loadManifest();
+});
 $("repoRef").addEventListener("change", loadManifest);
 $("accountSelect").addEventListener("change", updateLaunchState);
 $("discordStep").addEventListener("input", updateLaunchState);
