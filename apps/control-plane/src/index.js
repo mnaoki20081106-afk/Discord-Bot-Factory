@@ -554,11 +554,23 @@ async function handleInternal(request, env, url) {
     const workflowRunUrl = String(body.workflow_run_url || "").slice(0, 500);
     if (!/^\d+$/.test(workflowRunId)) return json({ error: "invalid workflow run id" }, 400);
 
-    const updated = await env.DB.prepare(
+    let updated = await env.DB.prepare(
       `UPDATE deployments
        SET status = ?, conclusion = ?, completed_at = ?, workflow_run_url = ?
        WHERE id = ? AND workflow_run_id = ? AND status = 'running'`,
     ).bind(status, conclusion, nowIso(), workflowRunUrl, result[1], workflowRunId).run();
+
+    if (!Number(updated.meta?.changes || 0) && status === "failed") {
+      updated = await env.DB.prepare(
+        `UPDATE deployments
+         SET status = 'failed', conclusion = ?, completed_at = ?,
+             workflow_run_id = ?, workflow_run_url = ?
+         WHERE id = ?
+           AND claimed_at IS NULL
+           AND workflow_run_id IS NULL
+           AND status IN ('queued', 'dispatched')`,
+      ).bind(conclusion, nowIso(), workflowRunId, workflowRunUrl, result[1]).run();
+    }
 
     if (!Number(updated.meta?.changes || 0)) {
       return json({ ok: true, ignored: true });
