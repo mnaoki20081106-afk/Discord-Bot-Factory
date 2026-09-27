@@ -645,6 +645,293 @@ async function handleInternal(request, env, url) {
   return json({ error: "not found" }, 404);
 }
 
+
+async function saveDeploymentProfile(env, repository, accountAlias, fields, confirmedRequirements) {
+  const encryptedInputs = await encryptValue(env, {
+    fields,
+    confirmed_requirements: [...confirmedRequirements],
+  });
+  await env.DB.prepare(
+    `INSERT INTO deployment_profiles(repository, account_alias, encrypted_inputs, updated_at)
+     VALUES(?, ?, ?, ?)
+     ON CONFLICT(repository, account_alias) DO UPDATE SET
+       encrypted_inputs = excluded.encrypted_inputs,
+       updated_at = excluded.updated_at`,
+  ).bind(repository, accountAlias, encryptedInputs, nowIso()).run();
+}
+
+async function loadDeploymentProfile(env, repository, accountAlias) {
+  const row = await env.DB.prepare(
+    "SELECT encrypted_inputs FROM deployment_profiles WHERE repository = ? AND account_alias = ?",
+  ).bind(repository, accountAlias).first();
+  if (!row) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(await decryptValue(env, row.encrypted_inputs));
+  } catch {
+    throw new Error("保存済みの再起動設定を復号できませんでした。通常起動から設定し直してください。");
+  }
+
+  return {
+    fields: parsed?.fields && typeof parsed.fields === "object" ? parsed.fields : {},
+    confirmed_requirements: Array.isArray(parsed?.confirmed_requirements)
+      ? parsed.confirmed_requirements.map(String)
+      : [],
+  };
+}
+
+async function createDeployment(env, input) {
+  const repository = validateRepoName(input.repository, env);
+  const ref = String(input.ref || "main").trim();
+  if (!ref || ref.length > 255 || /[\u0000-\u001f\u007f]/.test(ref)) {
+    throw new Error("GitHub Branch / Refの形式が不正です。");
+  }
+
+  const accountAlias = String(input.account_alias || "").trim();
+  const provided = input.fields && typeof input.fields === "object" ? input.fields : {};
+  const confirmed = new Set(
+    Array.isArray(input.confirmed_requirements)
+      ? input.confirmed_requirements.map(String)
+      : [],
+  );
+
+  const github = await getSetting(env, "github_pat");
+  if (!github) throw new Error("GitHub Tokenが未登録です。");
+
+  const account = await env.DB.prepare(
+    "SELECT alias, account_id, encrypted_token FROM cloudflare_accounts WHERE alias = ?",
+  ).bind(accountAlias).first();
+  if (!account) throw new Error("選択したCloudflare Accountが登録されていません。");
+  const cloudflareToken = await decryptValue(env, account.encrypted_token);
+
+  const manifest = await fetchManifest(env, github.value, repository, ref);
+  if (manifest.provider && manifest.provider !== "cloudflare") {
+    throw new Error("このBOTはCloudflare向けではありません。");
+  }
+  if (manifest.runtime && manifest.runtime !== "worker") {
+    throw new Error("このBOTはWorker runtimeではありません。");
+  }
+
+  const setup = normalizeSetup(manifest);
+  const workerName = normalizeWorkerName(manifest.name || repository.split("/")[1]);
+
+  await cleanupExpiredDeployments(env);
+
+  const previousWorker = await env.DB.prepare(
+    `SELECT worker_name
+     FROM deployments
+     WHERE account_alias = ?
+       AND repository = ?
+       AND claimed_at IS NOT NULL
+     ORDER BY created_at DESC
+     LIMIT 1`,
+  ).bind(account.alias, repository).first();
+
+  if (previousWorker && previousWorker.worker_name !== workerName) {
+    throw new Error(
+      `Worker名の変更を検知しました。旧Worker「${previousWorker.worker_name}」との二重起動を防ぐため停止しました。`,
+    );
+  }
+
+  if (!previousWorker && await cloudflareWorkerExists(
+    account.account_id,
+    cloudflareToken,
+    workerName,
+  )) {
+    throw new Error(
+      `Cloudflare上に同名Worker「${workerName}」が既に存在します。Factory管理外Workerの上書きを防ぐため停止しました。`,
+    );
+  }
+
+  const activeDeployment = await env.DB.prepare(
+    `SELECT id
+     FROM deployments
+     WHERE account_alias = ?
+       AND worker_name = ?
+       AND status IN ('queued', 'dispatched', 'running')
+     LIMIT 1`,
+  ).bind(account.alias, workerName).first();
+  if (activeDeployment) {
+    throw new Error("このWorkerは既に起動処理中です。完了してから再実行してください。");
+  }
+
+  const conflictingDeployment = await env.DB.prepare(
+    `SELECT repository
+     FROM deployments
+     WHERE account_alias = ?
+       AND worker_name = ?
+       AND repository != ?
+       AND claimed_at IS NOT NULL
+     ORDER BY created_at DESC
+     LIMIT 1`,
+  ).bind(account.alias, workerName, repository).first();
+  if (conflictingDeployment) {
+    throw new Error(`Worker名「${workerName}」は別のBOTリポジトリで使用済みです。`);
+  }
+
+  const requiredRequirements = [
+    ...setup.discord.intents,
+    ...setup.discord.permissions,
+    ...setup.discord.checks,
+  ].filter((item) => item.required);
+
+  for (const item of requiredRequirements) {
+    if (!confirmed.has(item.id)) {
+      throw new Error(`Discord設定「${item.label}」の確認が必要です。通常起動から設定を確認してください。`);
+    }
+  }
+
+  const botSecrets = {};
+  const profileFields = {};
+  for (const field of setup.fields) {
+    const rawValue = field.generate
+      ? await getOrCreateManagedValue(env, repository, account.alias, field)
+      : provided[field.key];
+    const value = validateFieldValue(field, rawValue);
+
+    if (!field.generate) {
+      if (field.type === "boolean") {
+        if (typeof rawValue === "boolean") profileFields[field.key] = rawValue;
+      } else {
+        profileFields[field.key] = rawValue == null ? "" : String(rawValue);
+      }
+    }
+
+    if (field.runtime_env && value !== "") {
+      botSecrets[field.key] = value;
+    }
+  }
+
+  if (input.save_profile) {
+    await saveDeploymentProfile(env, repository, account.alias, profileFields, confirmed);
+  }
+
+  const currentSecretKeys = Object.keys(botSecrets).sort();
+  if (currentSecretKeys.length > 100) {
+    throw new Error("Cloudflare Worker Secretは1回のデプロイで100個までです。bot-factory.jsonのruntime_env項目を減らしてください。");
+  }
+
+  const previousSecretState = await env.DB.prepare(
+    "SELECT secret_keys_json FROM worker_secret_state WHERE account_alias = ? AND worker_name = ?",
+  ).bind(account.alias, workerName).first();
+  const previousSecretKeys = parseSecretKeys(previousSecretState?.secret_keys_json || "[]");
+  const currentSecretKeySet = new Set(currentSecretKeys);
+  const staleSecretKeys = previousSecretKeys.filter((key) => !currentSecretKeySet.has(key));
+
+  const factoryRepo = String(env.FACTORY_GITHUB_REPO || "").trim();
+  const factoryRef = String(env.FACTORY_GITHUB_REF || "main").trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(factoryRepo)) {
+    throw new Error("FACTORY_GITHUB_REPO が未設定または不正です。");
+  }
+  if (!factoryRef || /[\u0000-\u001f\u007f]/.test(factoryRef)) {
+    throw new Error("FACTORY_GITHUB_REF が不正です。");
+  }
+
+  const id = crypto.randomUUID();
+  const createdAt = nowIso();
+  const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+  const payload = {
+    id,
+    repository,
+    ref,
+    cloudflare_account_alias: account.alias,
+    cloudflare_account_id: account.account_id,
+    cloudflare_api_token: cloudflareToken,
+    github_token: github.value,
+    bot_secret_bundle: botSecrets,
+    bot_secret_delete_keys: staleSecretKeys,
+  };
+  const encryptedPayload = await encryptValue(env, payload);
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO deployments(
+        id, repository, ref, worker_name, account_alias, encrypted_payload,
+        status, created_at, expires_at
+      ) VALUES(?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+    ).bind(
+      id,
+      repository,
+      ref,
+      workerName,
+      account.alias,
+      encryptedPayload,
+      createdAt,
+      expiresAt,
+    ),
+    env.DB.prepare(
+      "INSERT INTO deployment_secret_sets(deployment_id, secret_keys_json) VALUES(?, ?)",
+    ).bind(id, JSON.stringify(currentSecretKeys)),
+  ]);
+
+  let dispatch;
+  try {
+    dispatch = await githubFetch(
+      github.value,
+      `/repos/${factoryRepo}/actions/workflows/deploy-bot.yml/dispatches`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          ref: factoryRef,
+          inputs: { job_id: id, confirm: "DEPLOY" },
+        }),
+      },
+    );
+  } catch (error) {
+    await env.DB.prepare(
+      "UPDATE deployments SET status = 'dispatch_failed', conclusion = ? WHERE id = ?",
+    ).bind("github_network_error", id).run();
+    throw new Error(`GitHub Actionsへの接続に失敗しました: ${error?.message || error}`);
+  }
+
+  if (!dispatch.ok) {
+    const detail = await dispatch.text();
+    await env.DB.prepare(
+      "UPDATE deployments SET status = 'dispatch_failed', conclusion = ? WHERE id = ?",
+    ).bind(`github_${dispatch.status}`, id).run();
+    throw new Error(`GitHub Actionsを起動できませんでした (${dispatch.status}): ${detail.slice(0, 200)}`);
+  }
+
+  let workflowRunId = "";
+  let workflowRunUrl = "";
+  if (dispatch.status !== 204) {
+    const result = await dispatch.json().catch(() => ({}));
+    workflowRunId = result.workflow_run_id ? String(result.workflow_run_id) : "";
+    workflowRunUrl = String(result.html_url || "");
+  }
+
+  if (workflowRunId) {
+    await env.DB.prepare(
+      `UPDATE deployments
+       SET status = 'dispatched', workflow_run_id = ?, workflow_run_url = ?
+       WHERE id = ? AND status = 'queued'`,
+    ).bind(workflowRunId, workflowRunUrl, id).run();
+  } else {
+    await env.DB.prepare(
+      "UPDATE deployments SET status = 'dispatched' WHERE id = ? AND status = 'queued'",
+    ).bind(id).run();
+  }
+
+  const currentDeployment = await env.DB.prepare(
+    "SELECT id, status, workflow_run_id, workflow_run_url FROM deployments WHERE id = ?",
+  ).bind(id).first();
+
+  await audit(env, input.restart_of ? "deployment_restarted" : "deployment_dispatched", {
+    id,
+    repository,
+    account_alias: account.alias,
+    restart_of: input.restart_of || null,
+  });
+
+  return currentDeployment || {
+    id,
+    status: "dispatched",
+    workflow_run_id: workflowRunId,
+    workflow_run_url: workflowRunUrl,
+  };
+}
+
 async function handleApi(request, env, url) {
   if (url.pathname === "/api/login" && request.method === "POST") return apiLogin(request, env);
   if (url.pathname.startsWith("/api/internal/")) return handleInternal(request, env, url);
@@ -825,233 +1112,49 @@ async function handleApi(request, env, url) {
   if (url.pathname === "/api/deployments" && request.method === "POST") {
     try {
       const body = await request.json();
-      const repository = validateRepoName(body.repository, env);
-      const ref = String(body.ref || "main").trim();
-      if (!ref || ref.length > 255 || /[\u0000-\u001f\u007f]/.test(ref)) {
-        throw new Error("GitHub Branch / Refの形式が不正です。");
-      }
-      const accountAlias = String(body.account_alias || "").trim();
-      const provided = body.fields && typeof body.fields === "object" ? body.fields : {};
-      const confirmed = new Set(Array.isArray(body.confirmed_requirements) ? body.confirmed_requirements.map(String) : []);
-
-      const github = await getSetting(env, "github_pat");
-      if (!github) throw new Error("GitHub Tokenが未登録です。");
-
-      const account = await env.DB.prepare(
-        "SELECT alias, account_id, encrypted_token FROM cloudflare_accounts WHERE alias = ?",
-      ).bind(accountAlias).first();
-      if (!account) throw new Error("選択したCloudflare Accountが登録されていません。");
-      const cloudflareToken = await decryptValue(env, account.encrypted_token);
-
-      const manifest = await fetchManifest(env, github.value, repository, ref);
-      if (manifest.provider && manifest.provider !== "cloudflare") throw new Error("このBOTはCloudflare向けではありません。");
-      if (manifest.runtime && manifest.runtime !== "worker") throw new Error("このBOTはWorker runtimeではありません。");
-
-      const setup = normalizeSetup(manifest);
-      const workerName = normalizeWorkerName(manifest.name || repository.split("/")[1]);
-
-      // Clear expired/stalled jobs before checking the active-worker lock so
-      // an old failed run cannot block an immediate retry.
-      await cleanupExpiredDeployments(env);
-
-      const previousWorker = await env.DB.prepare(
-        `SELECT worker_name
-         FROM deployments
-         WHERE account_alias = ?
-           AND repository = ?
-           AND claimed_at IS NOT NULL
-         ORDER BY created_at DESC
-         LIMIT 1`,
-      ).bind(account.alias, repository).first();
-      if (previousWorker && previousWorker.worker_name !== workerName) {
-        throw new Error(
-          `Worker名の変更を検知しました。旧Worker「${previousWorker.worker_name}」との二重起動を防ぐため停止しました。`,
-        );
-      }
-
-      if (!previousWorker && await cloudflareWorkerExists(
-        account.account_id,
-        cloudflareToken,
-        workerName,
-      )) {
-        throw new Error(
-          `Cloudflare上に同名Worker「${workerName}」が既に存在します。Factory管理外Workerの上書きを防ぐため停止しました。`,
-        );
-      }
-
-      const activeDeployment = await env.DB.prepare(
-        `SELECT id
-         FROM deployments
-         WHERE account_alias = ?
-           AND worker_name = ?
-           AND status IN ('queued', 'dispatched', 'running')
-         LIMIT 1`,
-      ).bind(account.alias, workerName).first();
-      if (activeDeployment) {
-        throw new Error("このWorkerは既に起動処理中です。完了してから再実行してください。");
-      }
-
-      const conflictingDeployment = await env.DB.prepare(
-        `SELECT repository
-         FROM deployments
-         WHERE account_alias = ?
-           AND worker_name = ?
-           AND repository != ?
-           AND claimed_at IS NOT NULL
-         ORDER BY created_at DESC
-         LIMIT 1`,
-      ).bind(account.alias, workerName, repository).first();
-      if (conflictingDeployment) {
-        throw new Error(`Worker名「${workerName}」は別のBOTリポジトリで使用済みです。`);
-      }
-
-      const requiredRequirements = [
-        ...setup.discord.intents,
-        ...setup.discord.permissions,
-        ...setup.discord.checks,
-      ].filter((item) => item.required);
-
-      for (const item of requiredRequirements) {
-        if (!confirmed.has(item.id)) throw new Error(`Discord設定「${item.label}」の確認が必要です。`);
-      }
-
-      const botSecrets = {};
-      for (const field of setup.fields) {
-        const rawValue = field.generate
-          ? await getOrCreateManagedValue(env, repository, account.alias, field)
-          : provided[field.key];
-        const value = validateFieldValue(field, rawValue);
-
-        if (field.runtime_env && value !== "") {
-          botSecrets[field.key] = value;
-        }
-      }
-
-      const currentSecretKeys = Object.keys(botSecrets).sort();
-      if (currentSecretKeys.length > 100) {
-        throw new Error("Cloudflare Worker Secretは1回のデプロイで100個までです。bot-factory.jsonのruntime_env項目を減らしてください。");
-      }
-
-      const previousSecretState = await env.DB.prepare(
-        "SELECT secret_keys_json FROM worker_secret_state WHERE account_alias = ? AND worker_name = ?",
-      ).bind(account.alias, workerName).first();
-      const previousSecretKeys = parseSecretKeys(previousSecretState?.secret_keys_json || "[]");
-      const currentSecretKeySet = new Set(currentSecretKeys);
-      const staleSecretKeys = previousSecretKeys.filter((key) => !currentSecretKeySet.has(key));
-
-      const factoryRepo = String(env.FACTORY_GITHUB_REPO || "").trim();
-      const factoryRef = String(env.FACTORY_GITHUB_REF || "main").trim();
-      if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(factoryRepo)) {
-        throw new Error("FACTORY_GITHUB_REPO が未設定または不正です。");
-      }
-      if (!factoryRef || /[\u0000-\u001f\u007f]/.test(factoryRef)) {
-        throw new Error("FACTORY_GITHUB_REF が不正です。");
-      }
-
-      const id = crypto.randomUUID();
-      const createdAt = nowIso();
-      const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-      const payload = {
-        id,
-        repository,
-        ref,
-        cloudflare_account_alias: account.alias,
-        cloudflare_account_id: account.account_id,
-        cloudflare_api_token: cloudflareToken,
-        github_token: github.value,
-        bot_secret_bundle: botSecrets,
-        bot_secret_delete_keys: staleSecretKeys,
-      };
-      const encryptedPayload = await encryptValue(env, payload);
-
-      await env.DB.batch([
-        env.DB.prepare(
-          `INSERT INTO deployments(
-            id, repository, ref, worker_name, account_alias, encrypted_payload,
-            status, created_at, expires_at
-          ) VALUES(?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
-        ).bind(
-          id,
-          repository,
-          ref,
-          workerName,
-          account.alias,
-          encryptedPayload,
-          createdAt,
-          expiresAt,
-        ),
-        env.DB.prepare(
-          "INSERT INTO deployment_secret_sets(deployment_id, secret_keys_json) VALUES(?, ?)",
-        ).bind(id, JSON.stringify(currentSecretKeys)),
-      ]);
-
-      let dispatch;
-      try {
-        dispatch = await githubFetch(
-          github.value,
-          `/repos/${factoryRepo}/actions/workflows/deploy-bot.yml/dispatches`,
-          {
-            method: "POST",
-            body: JSON.stringify({
-              ref: factoryRef,
-              inputs: { job_id: id, confirm: "DEPLOY" },
-            }),
-          },
-        );
-      } catch (error) {
-        await env.DB.prepare(
-          "UPDATE deployments SET status = 'dispatch_failed', conclusion = ? WHERE id = ?",
-        ).bind("github_network_error", id).run();
-        throw new Error(`GitHub Actionsへの接続に失敗しました: ${error?.message || error}`);
-      }
-
-      if (!dispatch.ok) {
-        const detail = await dispatch.text();
-        await env.DB.prepare(
-          "UPDATE deployments SET status = 'dispatch_failed', conclusion = ? WHERE id = ?",
-        ).bind(`github_${dispatch.status}`, id).run();
-        throw new Error(`GitHub Actionsを起動できませんでした (${dispatch.status}): ${detail.slice(0, 200)}`);
-      }
-
-      let workflowRunId = "";
-      let workflowRunUrl = "";
-      if (dispatch.status !== 204) {
-        const result = await dispatch.json().catch(() => ({}));
-        workflowRunId = result.workflow_run_id ? String(result.workflow_run_id) : "";
-        workflowRunUrl = String(result.html_url || "");
-      }
-
-      if (workflowRunId) {
-        await env.DB.prepare(
-          `UPDATE deployments
-           SET status = 'dispatched', workflow_run_id = ?, workflow_run_url = ?
-           WHERE id = ? AND status = 'queued'`,
-        ).bind(workflowRunId, workflowRunUrl, id).run();
-      } else {
-        await env.DB.prepare(
-          "UPDATE deployments SET status = 'dispatched' WHERE id = ? AND status = 'queued'",
-        ).bind(id).run();
-      }
-
-      const currentDeployment = await env.DB.prepare(
-        "SELECT id, status, workflow_run_id, workflow_run_url FROM deployments WHERE id = ?",
-      ).bind(id).first();
-
-      await audit(env, "deployment_dispatched", {
-        id,
-        repository,
-        account_alias: account.alias,
+      const deployment = await createDeployment(env, {
+        repository: body.repository,
+        ref: body.ref,
+        account_alias: body.account_alias,
+        fields: body.fields,
+        confirmed_requirements: body.confirmed_requirements,
+        save_profile: true,
       });
+      return json({ ok: true, deployment });
+    } catch (error) {
+      return json({ error: error.message }, 400);
+    }
+  }
 
-      return json({
-        ok: true,
-        deployment: currentDeployment || {
-          id,
-          status: "dispatched",
-          workflow_run_id: workflowRunId,
-          workflow_run_url: workflowRunUrl,
-        },
+  const restartMatch = url.pathname.match(/^\/api\/deployments\/([^/]+)\/restart$/);
+  if (restartMatch && request.method === "POST") {
+    try {
+      const previous = await env.DB.prepare(
+        `SELECT id, repository, ref, account_alias
+         FROM deployments
+         WHERE id = ?`,
+      ).bind(restartMatch[1]).first();
+      if (!previous) return json({ error: "起動履歴が見つかりません。" }, 404);
+
+      const profile = await loadDeploymentProfile(
+        env,
+        previous.repository,
+        previous.account_alias,
+      );
+      if (!profile) {
+        throw new Error("この履歴には保存済み設定がありません。通常起動から一度起動してください。");
+      }
+
+      const deployment = await createDeployment(env, {
+        repository: previous.repository,
+        ref: previous.ref,
+        account_alias: previous.account_alias,
+        fields: profile.fields,
+        confirmed_requirements: profile.confirmed_requirements,
+        save_profile: false,
+        restart_of: previous.id,
       });
+      return json({ ok: true, deployment });
     } catch (error) {
       return json({ error: error.message }, 400);
     }
