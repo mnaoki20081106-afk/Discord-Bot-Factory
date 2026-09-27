@@ -23,14 +23,21 @@ for (const [key, value] of Object.entries(input)) {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
     throw new Error(`Invalid secret/environment variable name: ${key}`);
   }
+
   if (!["string", "number", "boolean"].includes(typeof value)) {
     throw new Error(`Secret ${key} must be a string, number, or boolean.`);
   }
+
   const normalized = String(value);
-  if (/[
-\0]/.test(normalized)) {
+  const hasForbiddenControl = [...normalized].some((char) => {
+    const code = char.charCodeAt(0);
+    return code === 0 || code === 10 || code === 13;
+  });
+
+  if (hasForbiddenControl) {
     throw new Error(`Secret ${key} contains a newline or NUL character.`);
   }
+
   output[key] = normalized;
 }
 
