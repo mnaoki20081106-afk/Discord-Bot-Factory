@@ -45,6 +45,13 @@ CREATE TABLE IF NOT EXISTS deployments (
 CREATE INDEX IF NOT EXISTS deployments_created_at_idx
   ON deployments(created_at DESC);
 
+CREATE UNIQUE INDEX IF NOT EXISTS deployments_active_worker_unique
+  ON deployments(account_alias, worker_name)
+  WHERE status IN ('queued', 'dispatched', 'running');
+
+CREATE INDEX IF NOT EXISTS deployments_worker_history_idx
+  ON deployments(account_alias, worker_name, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   action TEXT NOT NULL,
