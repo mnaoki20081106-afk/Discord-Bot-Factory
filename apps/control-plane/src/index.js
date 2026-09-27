@@ -1,0 +1,721 @@
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+function json(data, status = 200, headers = {}) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      ...headers,
+    },
+  });
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function bytesToBase64(bytes) {
+  let value = "";
+  const array = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  for (const byte of array) value += String.fromCharCode(byte);
+  return btoa(value);
+}
+
+function base64ToBytes(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function base64Url(bytes) {
+  return bytesToBase64(bytes).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
+}
+
+function getCookie(request, name) {
+  const cookie = request.headers.get("cookie") || "";
+  for (const part of cookie.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return rest.join("=");
+  }
+  return "";
+}
+
+async function digest(value) {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
+}
+
+function sameBytes(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+async function secureEqual(a, b) {
+  return sameBytes(await digest(String(a)), await digest(String(b)));
+}
+
+async function hmac(secret, value) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(value)));
+}
+
+async function createSession(env) {
+  const exp = Date.now() + 8 * 60 * 60 * 1000;
+  const nonce = crypto.randomUUID();
+  const body = `${exp}.${nonce}`;
+  const signature = base64Url(await hmac(env.FACTORY_SESSION_SECRET, body));
+  return `${body}.${signature}`;
+}
+
+async function verifySession(request, env) {
+  const value = getCookie(request, "factory_session");
+  const parts = value.split(".");
+  if (parts.length !== 3) return false;
+  const [expRaw, nonce, signature] = parts;
+  const exp = Number(expRaw);
+  if (!Number.isFinite(exp) || exp < Date.now() || !nonce) return false;
+  const expected = base64Url(await hmac(env.FACTORY_SESSION_SECRET, `${expRaw}.${nonce}`));
+  return secureEqual(signature, expected);
+}
+
+function sessionCookie(value) {
+  return `factory_session=${value}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=28800`;
+}
+
+function clearSessionCookie() {
+  return "factory_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0";
+}
+
+function assertSameOrigin(request) {
+  const origin = request.headers.get("origin");
+  if (!origin) return;
+  const expected = new URL(request.url).origin;
+  if (origin !== expected) throw new Error("Cross-origin request rejected.");
+}
+
+async function masterKey(env) {
+  if (!env.FACTORY_MASTER_KEY) throw new Error("FACTORY_MASTER_KEY is not configured.");
+  const bytes = base64ToBytes(env.FACTORY_MASTER_KEY);
+  if (bytes.byteLength !== 32) throw new Error("FACTORY_MASTER_KEY must be a base64-encoded 32-byte key.");
+  return crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
+async function encryptValue(env, value) {
+  const key = await masterKey(env);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const plaintext = encoder.encode(typeof value === "string" ? value : JSON.stringify(value));
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
+  return JSON.stringify({
+    v: 1,
+    iv: bytesToBase64(iv),
+    ct: bytesToBase64(ciphertext),
+  });
+}
+
+async function decryptValue(env, packed) {
+  const parsed = JSON.parse(packed);
+  if (parsed.v !== 1) throw new Error("Unsupported encrypted value format.");
+  const key = await masterKey(env);
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToBytes(parsed.iv) },
+    key,
+    base64ToBytes(parsed.ct),
+  );
+  return decoder.decode(plaintext);
+}
+
+async function audit(env, action, detail = {}) {
+  await env.DB.prepare(
+    "INSERT INTO audit_log(action, detail_json, created_at) VALUES(?, ?, ?)",
+  ).bind(action, JSON.stringify(detail), nowIso()).run();
+}
+
+async function getSetting(env, key) {
+  const row = await env.DB.prepare("SELECT encrypted_value, metadata_json FROM settings WHERE key = ?")
+    .bind(key).first();
+  if (!row) return null;
+  return {
+    value: await decryptValue(env, row.encrypted_value),
+    metadata: JSON.parse(row.metadata_json || "{}"),
+  };
+}
+
+async function setSetting(env, key, value, metadata = {}) {
+  const encrypted = await encryptValue(env, value);
+  await env.DB.prepare(
+    `INSERT INTO settings(key, encrypted_value, metadata_json, updated_at)
+     VALUES(?, ?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       encrypted_value = excluded.encrypted_value,
+       metadata_json = excluded.metadata_json,
+       updated_at = excluded.updated_at`,
+  ).bind(key, encrypted, JSON.stringify(metadata), nowIso()).run();
+}
+
+async function githubFetch(token, path, options = {}) {
+  const response = await fetch(`https://api.github.com${path}`, {
+    ...options,
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${token}`,
+      "x-github-api-version": "2026-03-10",
+      "user-agent": "discord-bot-factory-control-plane",
+      ...(options.headers || {}),
+    },
+  });
+  return response;
+}
+
+function decodeGitHubContent(content) {
+  const bytes = base64ToBytes(String(content).replace(/\s+/g, ""));
+  return decoder.decode(bytes);
+}
+
+function validateRepoName(value, env) {
+  const repo = String(value || "").trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+    throw new Error("Invalid repository name.");
+  }
+  if (env.ALLOWED_REPO_OWNER && repo.split("/")[0] !== env.ALLOWED_REPO_OWNER) {
+    throw new Error("Repository owner is not allowed.");
+  }
+  return repo;
+}
+
+async function fetchManifest(env, token, repository, ref = "main") {
+  const repo = validateRepoName(repository, env);
+  const response = await githubFetch(
+    token,
+    `/repos/${repo}/contents/bot-factory.json?ref=${encodeURIComponent(ref)}`,
+  );
+  if (response.status === 404) {
+    throw new Error("bot-factory.json が見つかりません。このBOTはFactoryサイト用のセットアップ定義が必要です。");
+  }
+  if (!response.ok) {
+    throw new Error(`GitHubからbot-factory.jsonを取得できませんでした (${response.status})`);
+  }
+  const payload = await response.json();
+  let manifest;
+  try {
+    manifest = JSON.parse(decodeGitHubContent(payload.content));
+  } catch {
+    throw new Error("bot-factory.json が正しいJSONではありません。");
+  }
+  if (!manifest || Array.isArray(manifest) || typeof manifest !== "object") {
+    throw new Error("bot-factory.json の形式が不正です。");
+  }
+  return manifest;
+}
+
+function normalizeSetup(manifest) {
+  const setup = manifest.setup && typeof manifest.setup === "object" ? manifest.setup : {};
+  const fields = Array.isArray(setup.fields) ? setup.fields : [];
+  const discord = setup.discord && typeof setup.discord === "object" ? setup.discord : {};
+
+  const normalizedFields = fields.map((field) => {
+    if (!field || typeof field !== "object") throw new Error("setup.fields に不正な項目があります。");
+    const key = String(field.key || "").trim();
+    if (!/^[A-Z][A-Z0-9_]*$/.test(key)) {
+      throw new Error(`入力項目 key "${key}" は環境変数形式(A-Z, 0-9, _)にしてください。`);
+    }
+    const type = String(field.type || "text");
+    if (!["text", "secret", "number", "url", "select", "boolean"].includes(type)) {
+      throw new Error(`入力項目 ${key} のtypeが未対応です。`);
+    }
+    return {
+      key,
+      label: String(field.label || key),
+      type,
+      required: field.required !== false,
+      placeholder: String(field.placeholder || ""),
+      help: String(field.help || ""),
+      pattern: field.pattern ? String(field.pattern) : "",
+      options: Array.isArray(field.options) ? field.options : [],
+      runtime_env: field.runtime_env !== false,
+    };
+  });
+
+  function normalizeRequirements(values, prefix) {
+    if (!Array.isArray(values)) return [];
+    return values.map((item, index) => {
+      if (typeof item === "string") {
+        return { id: `${prefix}-${index}`, label: item, required: true, description: "" };
+      }
+      return {
+        id: String(item.id || `${prefix}-${index}`),
+        label: String(item.label || item.name || "設定"),
+        required: item.required !== false,
+        description: String(item.description || item.reason || ""),
+        path: String(item.path || ""),
+      };
+    });
+  }
+
+  return {
+    title: String(setup.title || manifest.name || "Discord BOT"),
+    description: String(setup.description || ""),
+    fields: normalizedFields,
+    discord: {
+      intents: normalizeRequirements(discord.intents, "intent"),
+      permissions: normalizeRequirements(discord.permissions, "permission"),
+      checks: normalizeRequirements(discord.checks, "check"),
+      notes: Array.isArray(discord.notes) ? discord.notes.map(String) : [],
+    },
+  };
+}
+
+function validateFieldValue(field, raw) {
+  if (field.type === "boolean") {
+    if (typeof raw !== "boolean") throw new Error(`${field.label} はON/OFFで指定してください。`);
+    return raw ? "true" : "false";
+  }
+
+  const value = raw == null ? "" : String(raw).trim();
+  if (field.required && !value) throw new Error(`${field.label} は必須です。`);
+  if (!value) return "";
+
+  if (field.type === "number" && !Number.isFinite(Number(value))) {
+    throw new Error(`${field.label} は数値で入力してください。`);
+  }
+  if (field.type === "url") {
+    try {
+      const parsed = new URL(value);
+      if (!["http:", "https:"].includes(parsed.protocol)) throw new Error();
+    } catch {
+      throw new Error(`${field.label} は有効なURLを入力してください。`);
+    }
+  }
+  if (field.type === "select" && field.options.length) {
+    const allowed = field.options.map((option) =>
+      typeof option === "string" ? option : String(option.value ?? ""),
+    );
+    if (!allowed.includes(value)) throw new Error(`${field.label} の選択値が不正です。`);
+  }
+  if (field.pattern) {
+    let regex;
+    try {
+      regex = new RegExp(field.pattern);
+    } catch {
+      throw new Error(`${field.label} の検証ルールが不正です。`);
+    }
+    if (!regex.test(value)) throw new Error(`${field.label} の形式が正しくありません。`);
+  }
+  return value;
+}
+
+async function verifyCloudflareAccount(accountId, token) {
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts`,
+    { headers: { authorization: `Bearer ${token}` } },
+  );
+  if (!response.ok) {
+    throw new Error(`Cloudflare API TokenでAccountを確認できませんでした (${response.status})`);
+  }
+}
+
+async function isBlocked(env, ip) {
+  const row = await env.DB.prepare("SELECT failures, blocked_until FROM auth_attempts WHERE ip = ?")
+    .bind(ip).first();
+  return row && Number(row.blocked_until) > Date.now();
+}
+
+async function recordLoginFailure(env, ip) {
+  const existing = await env.DB.prepare("SELECT failures FROM auth_attempts WHERE ip = ?").bind(ip).first();
+  const failures = Number(existing?.failures || 0) + 1;
+  const blockedUntil = failures >= 5 ? Date.now() + 15 * 60 * 1000 : 0;
+  await env.DB.prepare(
+    `INSERT INTO auth_attempts(ip, failures, blocked_until, updated_at)
+     VALUES(?, ?, ?, ?)
+     ON CONFLICT(ip) DO UPDATE SET
+       failures = excluded.failures,
+       blocked_until = excluded.blocked_until,
+       updated_at = excluded.updated_at`,
+  ).bind(ip, failures, blockedUntil, Date.now()).run();
+}
+
+async function apiLogin(request, env) {
+  assertSameOrigin(request);
+  const ip = request.headers.get("cf-connecting-ip") || "unknown";
+  if (await isBlocked(env, ip)) return json({ error: "ログイン試行が多すぎます。しばらくしてから再試行してください。" }, 429);
+
+  const body = await request.json();
+  if (!env.FACTORY_ADMIN_PASSWORD) return json({ error: "FACTORY_ADMIN_PASSWORD が未設定です。" }, 503);
+
+  if (!(await secureEqual(body.password || "", env.FACTORY_ADMIN_PASSWORD))) {
+    await recordLoginFailure(env, ip);
+    return json({ error: "パスワードが違います。" }, 401);
+  }
+
+  await env.DB.prepare("DELETE FROM auth_attempts WHERE ip = ?").bind(ip).run();
+  const session = await createSession(env);
+  await audit(env, "login", { ip });
+  return json({ ok: true }, 200, { "set-cookie": sessionCookie(session) });
+}
+
+async function requireInternal(request, env) {
+  const auth = request.headers.get("authorization") || "";
+  if (!auth.startsWith("Bearer ") || !env.FACTORY_CONTROL_PLANE_KEY) return false;
+  return secureEqual(auth.slice(7), env.FACTORY_CONTROL_PLANE_KEY);
+}
+
+async function handleInternal(request, env, url) {
+  if (!(await requireInternal(request, env))) return json({ error: "unauthorized" }, 401);
+
+  const claim = url.pathname.match(/^\/api\/internal\/jobs\/([^/]+)\/claim$/);
+  if (claim && request.method === "POST") {
+    const row = await env.DB.prepare(
+      "SELECT encrypted_payload, expires_at FROM deployments WHERE id = ?",
+    ).bind(claim[1]).first();
+    if (!row) return json({ error: "job not found" }, 404);
+    if (Date.parse(row.expires_at) < Date.now()) return json({ error: "job expired" }, 410);
+
+    const payload = JSON.parse(await decryptValue(env, row.encrypted_payload));
+    await env.DB.prepare(
+      "UPDATE deployments SET status = 'running', claimed_at = ? WHERE id = ?",
+    ).bind(nowIso(), claim[1]).run();
+    await audit(env, "deployment_claimed", { id: claim[1] });
+    return json(payload);
+  }
+
+  const result = url.pathname.match(/^\/api\/internal\/jobs\/([^/]+)\/result$/);
+  if (result && request.method === "POST") {
+    const body = await request.json();
+    const conclusion = String(body.conclusion || "unknown").slice(0, 40);
+    const status = conclusion === "success" ? "completed" : "failed";
+    await env.DB.prepare(
+      "UPDATE deployments SET status = ?, conclusion = ?, completed_at = ? WHERE id = ?",
+    ).bind(status, conclusion, nowIso(), result[1]).run();
+    await audit(env, "deployment_result", { id: result[1], conclusion });
+    return json({ ok: true });
+  }
+
+  return json({ error: "not found" }, 404);
+}
+
+async function handleApi(request, env, url) {
+  if (url.pathname === "/api/login" && request.method === "POST") return apiLogin(request, env);
+  if (url.pathname.startsWith("/api/internal/")) return handleInternal(request, env, url);
+
+  if (!(await verifySession(request, env))) return json({ error: "unauthorized" }, 401);
+
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
+    try {
+      assertSameOrigin(request);
+    } catch (error) {
+      return json({ error: error.message }, 403);
+    }
+  }
+
+  if (url.pathname === "/api/me" && request.method === "GET") {
+    return json({ authenticated: true });
+  }
+
+  if (url.pathname === "/api/logout" && request.method === "POST") {
+    return json({ ok: true }, 200, { "set-cookie": clearSessionCookie() });
+  }
+
+  if (url.pathname === "/api/settings" && request.method === "GET") {
+    const github = await getSetting(env, "github_pat");
+    return json({
+      github_connected: Boolean(github),
+      github_login: github?.metadata?.login || "",
+      factory_repository: env.FACTORY_GITHUB_REPO || "",
+    });
+  }
+
+  if (url.pathname === "/api/settings/github" && request.method === "PUT") {
+    const body = await request.json();
+    const token = String(body.token || "").trim();
+    if (!token) return json({ error: "GitHub Tokenを入力してください。" }, 400);
+
+    const response = await githubFetch(token, "/user");
+    if (!response.ok) return json({ error: `GitHub Tokenを確認できませんでした (${response.status})` }, 400);
+    const user = await response.json();
+    await setSetting(env, "github_pat", token, { login: user.login });
+    await audit(env, "github_token_updated", { login: user.login });
+    return json({ ok: true, login: user.login });
+  }
+
+  if (url.pathname === "/api/github/repos" && request.method === "GET") {
+    const github = await getSetting(env, "github_pat");
+    if (!github) return json({ error: "先にGitHub Tokenを登録してください。" }, 409);
+
+    const response = await githubFetch(
+      github.value,
+      "/user/repos?per_page=100&affiliation=owner&sort=updated",
+    );
+    if (!response.ok) return json({ error: "GitHubリポジトリ一覧を取得できませんでした。" }, 502);
+    const repos = await response.json();
+    const filtered = repos
+      .filter((repo) => !env.ALLOWED_REPO_OWNER || repo.owner?.login === env.ALLOWED_REPO_OWNER)
+      .map((repo) => ({
+        name: repo.name,
+        full_name: repo.full_name,
+        private: Boolean(repo.private),
+        default_branch: repo.default_branch || "main",
+        updated_at: repo.updated_at,
+      }));
+    return json({ repositories: filtered });
+  }
+
+  if (url.pathname === "/api/github/manifest" && request.method === "GET") {
+    const github = await getSetting(env, "github_pat");
+    if (!github) return json({ error: "GitHub Tokenが未登録です。" }, 409);
+    try {
+      const repository = validateRepoName(url.searchParams.get("repo"), env);
+      const ref = url.searchParams.get("ref") || "main";
+      const manifest = await fetchManifest(env, github.value, repository, ref);
+      const setup = normalizeSetup(manifest);
+      return json({
+        manifest: {
+          name: manifest.name || repository.split("/")[1],
+          provider: manifest.provider || "cloudflare",
+          runtime: manifest.runtime || "worker",
+          working_directory: manifest.working_directory || ".",
+          wrangler_config: manifest.wrangler_config || "auto",
+        },
+        setup,
+      });
+    } catch (error) {
+      return json({ error: error.message }, 400);
+    }
+  }
+
+  if (url.pathname === "/api/cloudflare/accounts" && request.method === "GET") {
+    const rows = await env.DB.prepare(
+      "SELECT alias, label, account_id, created_at, updated_at FROM cloudflare_accounts ORDER BY label",
+    ).all();
+    return json({ accounts: rows.results || [] });
+  }
+
+  if (url.pathname === "/api/cloudflare/accounts" && request.method === "POST") {
+    try {
+      const body = await request.json();
+      const alias = String(body.alias || "").trim().toLowerCase();
+      const label = String(body.label || alias).trim();
+      const accountId = String(body.account_id || "").trim();
+      const token = String(body.api_token || "").trim();
+
+      if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(alias)) throw new Error("Aliasの形式が不正です。");
+      if (!/^[a-fA-F0-9]{32}$/.test(accountId)) throw new Error("Cloudflare Account IDの形式が不正です。");
+      if (!token) throw new Error("Cloudflare API Tokenは必須です。");
+
+      await verifyCloudflareAccount(accountId, token);
+      const encryptedToken = await encryptValue(env, token);
+      const now = nowIso();
+      await env.DB.prepare(
+        `INSERT INTO cloudflare_accounts(alias, label, account_id, encrypted_token, created_at, updated_at)
+         VALUES(?, ?, ?, ?, ?, ?)
+         ON CONFLICT(alias) DO UPDATE SET
+           label = excluded.label,
+           account_id = excluded.account_id,
+           encrypted_token = excluded.encrypted_token,
+           updated_at = excluded.updated_at`,
+      ).bind(alias, label, accountId, encryptedToken, now, now).run();
+      await audit(env, "cloudflare_account_saved", { alias, account_id: accountId });
+      return json({ ok: true });
+    } catch (error) {
+      return json({ error: error.message }, 400);
+    }
+  }
+
+  const accountDelete = url.pathname.match(/^\/api\/cloudflare\/accounts\/([^/]+)$/);
+  if (accountDelete && request.method === "DELETE") {
+    const alias = decodeURIComponent(accountDelete[1]);
+    await env.DB.prepare("DELETE FROM cloudflare_accounts WHERE alias = ?").bind(alias).run();
+    await audit(env, "cloudflare_account_deleted", { alias });
+    return json({ ok: true });
+  }
+
+  if (url.pathname === "/api/deployments" && request.method === "GET") {
+    const rows = await env.DB.prepare(
+      `SELECT id, repository, ref, worker_name, account_alias, status, conclusion,
+              workflow_run_id, workflow_run_url, created_at, completed_at
+       FROM deployments ORDER BY created_at DESC LIMIT 50`,
+    ).all();
+    return json({ deployments: rows.results || [] });
+  }
+
+  if (url.pathname === "/api/deployments" && request.method === "POST") {
+    try {
+      const body = await request.json();
+      const repository = validateRepoName(body.repository, env);
+      const ref = String(body.ref || "main").trim();
+      const accountAlias = String(body.account_alias || "").trim();
+      const provided = body.fields && typeof body.fields === "object" ? body.fields : {};
+      const confirmed = new Set(Array.isArray(body.confirmed_requirements) ? body.confirmed_requirements.map(String) : []);
+
+      const github = await getSetting(env, "github_pat");
+      if (!github) throw new Error("GitHub Tokenが未登録です。");
+
+      const account = await env.DB.prepare(
+        "SELECT alias, account_id, encrypted_token FROM cloudflare_accounts WHERE alias = ?",
+      ).bind(accountAlias).first();
+      if (!account) throw new Error("選択したCloudflare Accountが登録されていません。");
+
+      const manifest = await fetchManifest(env, github.value, repository, ref);
+      if (manifest.provider && manifest.provider !== "cloudflare") throw new Error("このBOTはCloudflare向けではありません。");
+      if (manifest.runtime && manifest.runtime !== "worker") throw new Error("このBOTはWorker runtimeではありません。");
+
+      const setup = normalizeSetup(manifest);
+      const requiredRequirements = [
+        ...setup.discord.intents,
+        ...setup.discord.permissions,
+        ...setup.discord.checks,
+      ].filter((item) => item.required);
+
+      for (const item of requiredRequirements) {
+        if (!confirmed.has(item.id)) throw new Error(`Discord設定「${item.label}」の確認が必要です。`);
+      }
+
+      const botSecrets = {};
+      for (const field of setup.fields) {
+        const value = validateFieldValue(field, provided[field.key]);
+        if (field.runtime_env && (value !== "" || field.required)) botSecrets[field.key] = value;
+      }
+
+      const cloudflareToken = await decryptValue(env, account.encrypted_token);
+      const id = crypto.randomUUID();
+      const createdAt = nowIso();
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+      const payload = {
+        id,
+        repository,
+        ref,
+        cloudflare_account_alias: account.alias,
+        cloudflare_account_id: account.account_id,
+        cloudflare_api_token: cloudflareToken,
+        github_token: github.value,
+        bot_secret_bundle: botSecrets,
+      };
+      const encryptedPayload = await encryptValue(env, payload);
+
+      await env.DB.prepare(
+        `INSERT INTO deployments(
+          id, repository, ref, worker_name, account_alias, encrypted_payload,
+          status, created_at, expires_at
+        ) VALUES(?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+      ).bind(
+        id,
+        repository,
+        ref,
+        String(manifest.name || repository.split("/")[1]),
+        account.alias,
+        encryptedPayload,
+        createdAt,
+        expiresAt,
+      ).run();
+
+      const factoryRepo = String(env.FACTORY_GITHUB_REPO || "");
+      if (!factoryRepo.includes("/")) throw new Error("FACTORY_GITHUB_REPO が未設定です。");
+      const dispatch = await githubFetch(
+        github.value,
+        `/repos/${factoryRepo}/actions/workflows/deploy-bot.yml/dispatches`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ref: env.FACTORY_GITHUB_REF || "main",
+            inputs: { job_id: id, confirm: "DEPLOY" },
+          }),
+        },
+      );
+
+      if (!dispatch.ok) {
+        const detail = await dispatch.text();
+        await env.DB.prepare(
+          "UPDATE deployments SET status = 'dispatch_failed', conclusion = ? WHERE id = ?",
+        ).bind(`github_${dispatch.status}`, id).run();
+        throw new Error(`GitHub Actionsを起動できませんでした (${dispatch.status}): ${detail.slice(0, 200)}`);
+      }
+
+      let workflowRunId = "";
+      let workflowRunUrl = "";
+      if (dispatch.status !== 204) {
+        const result = await dispatch.json().catch(() => ({}));
+        workflowRunId = result.workflow_run_id ? String(result.workflow_run_id) : "";
+        workflowRunUrl = String(result.html_url || "");
+      }
+
+      await env.DB.prepare(
+        "UPDATE deployments SET status = 'dispatched', workflow_run_id = ?, workflow_run_url = ? WHERE id = ?",
+      ).bind(workflowRunId, workflowRunUrl, id).run();
+      await audit(env, "deployment_dispatched", {
+        id,
+        repository,
+        account_alias: account.alias,
+      });
+
+      return json({
+        ok: true,
+        deployment: {
+          id,
+          status: "dispatched",
+          workflow_run_id: workflowRunId,
+          workflow_run_url: workflowRunUrl,
+        },
+      });
+    } catch (error) {
+      return json({ error: error.message }, 400);
+    }
+  }
+
+  const deploymentMatch = url.pathname.match(/^\/api\/deployments\/([^/]+)$/);
+  if (deploymentMatch && request.method === "GET") {
+    const row = await env.DB.prepare(
+      `SELECT id, repository, ref, worker_name, account_alias, status, conclusion,
+              workflow_run_id, workflow_run_url, created_at, completed_at
+       FROM deployments WHERE id = ?`,
+    ).bind(deploymentMatch[1]).first();
+    if (!row) return json({ error: "not found" }, 404);
+
+    if (row.workflow_run_id && !["completed", "failed"].includes(row.status)) {
+      const github = await getSetting(env, "github_pat");
+      if (github) {
+        const response = await githubFetch(
+          github.value,
+          `/repos/${env.FACTORY_GITHUB_REPO}/actions/runs/${row.workflow_run_id}`,
+        );
+        if (response.ok) {
+          const run = await response.json();
+          row.status = run.status === "completed"
+            ? (run.conclusion === "success" ? "completed" : "failed")
+            : run.status;
+          row.conclusion = run.conclusion || null;
+          row.workflow_run_url = run.html_url || row.workflow_run_url;
+          if (run.status === "completed") {
+            await env.DB.prepare(
+              "UPDATE deployments SET status = ?, conclusion = ?, workflow_run_url = ?, completed_at = ? WHERE id = ?",
+            ).bind(row.status, row.conclusion, row.workflow_run_url, nowIso(), row.id).run();
+          }
+        }
+      }
+    }
+    return json({ deployment: row });
+  }
+
+  return json({ error: "not found" }, 404);
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+
+    try {
+      if (url.pathname.startsWith("/api/")) return await handleApi(request, env, url);
+      return env.ASSETS.fetch(request);
+    } catch (error) {
+      console.error("control-plane error", error?.message || error);
+      return json({ error: "サーバー処理に失敗しました。" }, 500);
+    }
+  },
+};
