@@ -774,20 +774,19 @@ async function handleApi(request, env, url) {
   const accountDelete = url.pathname.match(/^\/api\/cloudflare\/accounts\/([^/]+)$/);
   if (accountDelete && request.method === "DELETE") {
     const alias = decodeURIComponent(accountDelete[1]);
-    const active = await env.DB.prepare(
-      `SELECT COUNT(*) AS count
-       FROM deployments
-       WHERE account_alias = ? AND status IN ('queued', 'dispatched', 'running')`,
+    const usage = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM deployments WHERE account_alias = ?",
     ).bind(alias).first();
 
-    if (Number(active?.count || 0) > 0) {
-      return json({ error: "このCloudflare Accountを使ったBOT起動処理が進行中です。" }, 409);
+    if (Number(usage?.count || 0) > 0) {
+      return json({
+        error: "このCloudflare AccountにはBOT起動履歴があるため削除できません。表示名やAPI Tokenは同じAccount IDで再登録して更新してください。",
+      }, 409);
     }
 
-    await env.DB.batch([
-      env.DB.prepare("DELETE FROM managed_values WHERE account_alias = ?").bind(alias),
-      env.DB.prepare("DELETE FROM cloudflare_accounts WHERE alias = ?").bind(alias),
-    ]);
+    await env.DB.prepare(
+      "DELETE FROM cloudflare_accounts WHERE alias = ?",
+    ).bind(alias).run();
     await audit(env, "cloudflare_account_deleted", { alias });
     return json({ ok: true });
   }
@@ -842,7 +841,7 @@ async function handleApi(request, env, url) {
          FROM deployments
          WHERE account_alias = ?
            AND repository = ?
-           AND status = 'completed'
+           AND claimed_at IS NOT NULL
          ORDER BY created_at DESC
          LIMIT 1`,
       ).bind(account.alias, repository).first();
@@ -870,7 +869,7 @@ async function handleApi(request, env, url) {
          WHERE account_alias = ?
            AND worker_name = ?
            AND repository != ?
-           AND status = 'completed'
+           AND claimed_at IS NOT NULL
          ORDER BY created_at DESC
          LIMIT 1`,
       ).bind(account.alias, workerName, repository).first();
