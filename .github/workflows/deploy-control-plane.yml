@@ -1,9 +1,6 @@
 name: Deploy Control Plane
 
 on:
-  push:
-    branches: ["main"]
-    paths: [".factory/deploy-now"]
   workflow_dispatch:
     inputs:
       confirm:
@@ -20,7 +17,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: ${{ github.event_name == 'push' || inputs.confirm == 'DEPLOY_CONTROL' }}
+    if: ${{ inputs.confirm == 'DEPLOY_CONTROL' }}
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CONTROL_PLANE_CLOUDFLARE_API_TOKEN }}
