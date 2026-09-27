@@ -470,9 +470,13 @@ async function isBlocked(env, ip) {
 }
 
 async function recordLoginFailure(env, ip) {
-  const existing = await env.DB.prepare("SELECT failures FROM auth_attempts WHERE ip = ?").bind(ip).first();
-  const failures = Number(existing?.failures || 0) + 1;
-  const blockedUntil = failures >= 5 ? Date.now() + 15 * 60 * 1000 : 0;
+  const now = Date.now();
+  const existing = await env.DB.prepare(
+    "SELECT failures, blocked_until, updated_at FROM auth_attempts WHERE ip = ?",
+  ).bind(ip).first();
+  const stale = !existing || now - Number(existing.updated_at || 0) > 15 * 60 * 1000;
+  const failures = (stale ? 0 : Number(existing.failures || 0)) + 1;
+  const blockedUntil = failures >= 5 ? now + 15 * 60 * 1000 : 0;
   await env.DB.prepare(
     `INSERT INTO auth_attempts(ip, failures, blocked_until, updated_at)
      VALUES(?, ?, ?, ?)
@@ -480,7 +484,7 @@ async function recordLoginFailure(env, ip) {
        failures = excluded.failures,
        blocked_until = excluded.blocked_until,
        updated_at = excluded.updated_at`,
-  ).bind(ip, failures, blockedUntil, Date.now()).run();
+  ).bind(ip, failures, blockedUntil, now).run();
 }
 
 async function apiLogin(request, env) {
