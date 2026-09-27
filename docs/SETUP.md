@@ -1,148 +1,187 @@
-# Discord Bot Factory setup
+# Factory management site setup
 
-Factory deploys existing bot repositories to explicitly selected Cloudflare accounts.
+This is the one-time bootstrap for the Factory management site.
 
-## 1. GitHub source access
+After this is complete, normal Cloudflare account registration and Discord BOT input are done from the website.
 
-Create this Actions repository secret in Discord-Bot-Factory:
+## 1. Choose the Cloudflare account that hosts the Control Plane
 
-- `FACTORY_GITHUB_PAT`
+The management site itself needs one Cloudflare account.
 
-It needs access to the bot repositories Factory will deploy, with repository Contents read/write.
+This account is only for hosting the Factory Control Plane. It does not have to be the same account used by deployed Discord bots.
 
-Read access is used to fetch bot code. Write access is used only when Wrangler writes generated resource IDs into a Wrangler config and Factory persists those changes back to the bot repository.
+Create an API Token that can deploy Workers and D1 in that account.
 
-Repository-creation permission is not required.
+In the Discord-Bot-Factory GitHub repository create these Actions secrets:
 
-## 2. Create one Cloudflare API token per Cloudflare account
+- `CONTROL_PLANE_CLOUDFLARE_API_TOKEN`
+- `CONTROL_PLANE_CLOUDFLARE_ACCOUNT_ID`
 
-For every Cloudflare account used by Factory, create a separate API token scoped only to that account.
+## 2. Create Control Plane security secrets
 
-For example:
+Create these GitHub Actions secrets:
 
-- Discord server A -> Cloudflare account A -> `CLOUDFLARE_GUILD_A_API_TOKEN`
-- Discord server B -> Cloudflare account B -> `CLOUDFLARE_GUILD_B_API_TOKEN`
+- `CONTROL_PLANE_ADMIN_PASSWORD`
+- `CONTROL_PLANE_MASTER_KEY`
+- `CONTROL_PLANE_SESSION_SECRET`
+- `FACTORY_CONTROL_PLANE_KEY`
 
-The token needs the Cloudflare permissions required by the Wrangler resources used by bots in that account. At minimum, Worker deployment requires Workers Scripts write/edit access. Add D1/KV/R2/etc permissions only when that account's bots use those resources.
+Recommended generation commands:
 
-Do not use one unrestricted token for every Cloudflare account.
+```bash
+# AES-256 key used to encrypt GitHub/Cloudflare/Discord credentials in D1
+openssl rand -base64 32
 
-## 3. Register account metadata
+# Session signing secret
+openssl rand -hex 32
 
-In Discord-Bot-Factory:
-
-**Settings -> Secrets and variables -> Actions -> Variables -> New repository variable**
-
-Create:
-
-`CLOUDFLARE_ACCOUNTS_JSON`
-
-Example value:
-
-```json
-{
-  "guild-a": {
-    "account_id": "0123456789abcdef0123456789abcdef",
-    "token_secret": "CLOUDFLARE_GUILD_A_API_TOKEN"
-  },
-  "guild-b": {
-    "account_id": "fedcba9876543210fedcba9876543210",
-    "token_secret": "CLOUDFLARE_GUILD_B_API_TOKEN"
-  }
-}
+# Shared site <-> GitHub Actions authentication key
+openssl rand -hex 32
 ```
 
-Rules:
+Use the first output for `CONTROL_PLANE_MASTER_KEY`.
 
-- the top-level key is the account alias used by `bot-factory.json`;
-- `account_id` is that Cloudflare account's 32-character Account ID;
-- `token_secret` is the name of the GitHub Actions secret containing the API token for that account;
-- aliases use lowercase letters, numbers, hyphens, or underscores.
+Use the second for `CONTROL_PLANE_SESSION_SECRET`.
 
-Account IDs and secret names are not secret, so the registry is a GitHub Variable rather than a Secret.
+Use the third for `FACTORY_CONTROL_PLANE_KEY`.
 
-## 4. Add the API token secrets
+Choose your own strong value for `CONTROL_PLANE_ADMIN_PASSWORD`.
 
-In:
+Do not reuse any Cloudflare or Discord password/token for these values.
 
-**Settings -> Secrets and variables -> Actions -> Secrets**
-
-Create each secret named by the registry, for example:
-
-- `CLOUDFLARE_GUILD_A_API_TOKEN`
-- `CLOUDFLARE_GUILD_B_API_TOKEN`
-
-Each secret value is the Cloudflare API token scoped to only that Cloudflare account.
-
-## 5. Add bot runtime secrets
-
-Bot-specific values such as Discord tokens are separate from Cloudflare credentials.
-
-Example secret:
-
-`BOT_BUNDLE_DISCORD_SECURITY`
-
-Value:
-
-```json
-{
-  "DISCORD_BOT_TOKEN": "...",
-  "DISCORD_APPLICATION_ID": "..."
-}
-```
-
-Do not commit these values into the bot repository.
-
-## 6. Add bot-factory.json to each bot repository
-
-Example:
-
-```json
-{
-  "name": "discord-security",
-  "runtime": "worker",
-  "provider": "cloudflare",
-  "cloudflare_account": "guild-a",
-  "working_directory": ".",
-  "wrangler_config": "wrangler.jsonc",
-  "d1_migrations": ["DB"],
-  "health_url": "https://example.workers.dev/health"
-}
-```
-
-The `cloudflare_account` value must match an alias in `CLOUDFLARE_ACCOUNTS_JSON`.
-
-Factory intentionally refuses to deploy a bot that does not specify an account alias.
-
-## 7. Deploy
+## 3. Deploy the management site
 
 Open:
 
-**Discord-Bot-Factory -> Actions -> Deploy Bot -> Run workflow**
+**GitHub > Discord-Bot-Factory > Actions > Deploy Control Plane > Run workflow**
 
 Enter:
 
-- `source_repository`: for example `mnaoki20081106-afk/Discord-Security`;
-- `source_ref`: normally `main`;
-- `secret_bundle_name`: for example `BOT_BUNDLE_DISCORD_SECURITY`;
-- `confirm`: `DEPLOY`.
+`DEPLOY_CONTROL`
 
-Factory then:
+The workflow:
 
-1. reads `bot-factory.json`;
-2. resolves the selected Cloudflare account;
-3. loads only that account's API token;
-4. deploys the Worker;
-5. provisions/links Wrangler-declared resources;
-6. applies configured D1 migrations;
-7. persists generated Wrangler resource IDs when necessary;
-8. performs the optional health check.
+1. installs Wrangler;
+2. deploys the Control Plane Worker and static management site;
+3. automatically provisions the D1 binding;
+4. applies `schema.sql`;
+5. uploads the Control Plane secrets.
 
-Factory does not fail over to another Cloudflare account automatically.
+Copy the final `workers.dev` URL from the Wrangler deployment log.
 
+## 4. Link GitHub Actions back to the site
 
-## Wrangler account_id rule
+In:
 
-Do not hard-code `account_id` in a bot's `wrangler.jsonc`, `wrangler.json`, or `wrangler.toml`.
+**Discord-Bot-Factory > Settings > Secrets and variables > Actions > Variables**
 
-The Factory account registry is the single source of truth for routing. Factory sets `CLOUDFLARE_ACCOUNT_ID` for the selected account and rejects Wrangler configs that contain `account_id`.
+Create:
+
+- `FACTORY_CONTROL_PLANE_URL`
+
+Value:
+
+```text
+https://your-control-plane.workers.dev
+```
+
+The `FACTORY_CONTROL_PLANE_KEY` GitHub secret created earlier is used by the deployment workflow to securely claim deployment jobs from this URL.
+
+## 5. Log in to the site
+
+Open the workers.dev URL and log in with the value stored in:
+
+`CONTROL_PLANE_ADMIN_PASSWORD`
+
+## 6. Connect GitHub from the site
+
+Open:
+
+**設定 > GitHub接続**
+
+Create a fine-grained GitHub PAT that can:
+
+- read/write Contents for bot repositories the Factory will deploy;
+- write Actions for the Discord-Bot-Factory repository.
+
+Paste the PAT into the site.
+
+The site verifies it with GitHub and then stores it encrypted in D1.
+
+The PAT is not shown again after registration.
+
+## 7. Register Cloudflare accounts from the site
+
+Open:
+
+**Cloudflare > Accountを登録**
+
+For each Discord-server Cloudflare account enter:
+
+- Display name
+- Alias
+- 32-character Cloudflare Account ID
+- API Token scoped to that account
+
+The Control Plane verifies that the token can access Workers in that Account and stores the token encrypted in D1.
+
+The browser cannot retrieve the stored token later.
+
+Recommended account layout:
+
+```text
+Discord server A -> Cloudflare Account A
+Discord server B -> Cloudflare Account B
+Discord server C -> Cloudflare Account C
+```
+
+Related Workers for the same Discord server should normally be deployed to the same Cloudflare account.
+
+## 8. Prepare each bot repository
+
+ChatGPT should add a `bot-factory.json` when implementing a bot.
+
+The manifest defines:
+
+- Worker deployment information;
+- required Discord values;
+- required Privileged Gateway Intents;
+- required BOT permissions;
+- any other manual checks.
+
+See [BOT_MANIFEST.md](BOT_MANIFEST.md).
+
+## 9. Normal deployment flow
+
+From the management site:
+
+1. Select the GitHub repository.
+2. Select the Cloudflare account.
+3. Enter only the fields requested by that bot.
+4. Confirm the Discord Intent/permission checklist.
+5. Press **BOTを起動**.
+
+The site encrypts a deployment payload with a 30-minute expiry and triggers `deploy-bot.yml` with only the random job ID.
+
+GitHub Actions claims that job through the internal authenticated API, deploys the Worker, and reports the result back to the site.
+
+## Secret storage summary
+
+Persistent and encrypted in Control Plane D1:
+
+- GitHub PAT
+- Cloudflare account API Tokens
+
+Short-lived and encrypted per deployment:
+
+- Discord BOT Token
+- Application ID and other bot-specific runtime input
+
+Stored only as Worker/GitHub bootstrap secrets:
+
+- Control Plane master encryption key
+- administrator password
+- session signing secret
+- site <-> Actions shared key
+
+No Discord or Cloudflare credential is passed as a GitHub workflow input.
