@@ -4,8 +4,8 @@ const state = { repositories: [], accounts: [], manifest: null, setup: null, rep
 async function api(path, options = {}) {
   const response = await fetch(path, {
     credentials: "same-origin",
-    headers: { "content-type": "application/json", ...(options.headers || {}) },
     ...options,
+    headers: { "content-type": "application/json", ...(options.headers || {}) },
   });
   const body = await response.json().catch(() => ({}));
   if (response.status === 401 && path !== "/api/login") {
