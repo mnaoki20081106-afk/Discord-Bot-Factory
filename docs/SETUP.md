@@ -139,3 +139,10 @@ Factory then:
 8. performs the optional health check.
 
 Factory does not fail over to another Cloudflare account automatically.
+
+
+## Wrangler account_id rule
+
+Do not hard-code `account_id` in a bot's `wrangler.jsonc`, `wrangler.json`, or `wrangler.toml`.
+
+The Factory account registry is the single source of truth for routing. Factory sets `CLOUDFLARE_ACCOUNT_ID` for the selected account and rejects Wrangler configs that contain `account_id`.
