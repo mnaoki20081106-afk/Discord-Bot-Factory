@@ -376,8 +376,14 @@ async function handleInternal(request, env, url) {
     const row = await env.DB.prepare(
       "SELECT encrypted_payload, expires_at, claimed_at FROM deployments WHERE id = ?",
     ).bind(claim[1]).first();
-    if (!row) return json({ error: "job not found" }, 404);\n    if (row.claimed_at) return json({ error: "job already claimed" }, 409);
-    if (Date.parse(row.expires_at) < Date.now()) {\n      await env.DB.prepare(\n        "UPDATE deployments SET status = 'expired', conclusion = 'expired' WHERE id = ?",\n      ).bind(claim[1]).run();\n      return json({ error: "job expired" }, 410);\n    }
+    if (!row) return json({ error: "job not found" }, 404);
+    if (row.claimed_at) return json({ error: "job already claimed" }, 409);
+    if (Date.parse(row.expires_at) < Date.now()) {
+      await env.DB.prepare(
+        "UPDATE deployments SET status = 'expired', conclusion = 'expired' WHERE id = ?",
+      ).bind(claim[1]).run();
+      return json({ error: "job expired" }, 410);
+    }
 
     const payload = JSON.parse(await decryptValue(env, row.encrypted_payload));
     await env.DB.prepare(
