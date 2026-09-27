@@ -1,58 +1,62 @@
 # Discord Bot Factory
 
-Discord-Bot-Factory takes an **existing bot repository**, prepares a supported free hosting environment, deploys the bot, and starts it.
+Discord-Bot-Factory deploys an **existing Discord bot repository** to a selected Cloudflare account.
 
-It does **not** create GitHub repositories and it does not write the bot application itself.
+It does not create GitHub repositories and it does not write the bot application itself.
 
 ## Intended flow
 
-1. You create the GitHub repository.
-2. ChatGPT writes the bot code and, when useful, adds `bot-factory.json`.
-3. Discord-Bot-Factory reads that repository.
-4. Factory selects/configures the hosting environment.
-5. Factory deploys the code and starts the bot.
-6. Factory exits. It is not a continuously running management service.
+1. You create the bot repository.
+2. ChatGPT writes the bot code and adds `bot-factory.json`.
+3. `bot-factory.json` assigns that bot to a Cloudflare account alias.
+4. Discord-Bot-Factory resolves that alias through the Factory account registry.
+5. Factory deploys the Worker, provisions Wrangler-declared resources, uploads runtime secrets, and optionally applies D1 migrations.
+6. Factory exits after deployment/startup verification.
 
-## Supported deployment paths
+## Cloudflare account isolation
 
-### Cloudflare Workers
+The Factory is Cloudflare-only and supports multiple Cloudflare accounts.
 
-Worker projects deploy to Cloudflare. Wrangler configuration remains the source of truth.
+Each Discord server can be assigned to a different Cloudflare account. Related Workers for the same Discord server should use the same account alias so service bindings and data resources stay together.
 
-Factory can:
+The account registry stores only non-secret metadata:
 
-- install dependencies;
-- deploy the Worker;
-- upload bot runtime secrets with the deployment;
-- let Wrangler provision supported draft bindings such as D1/KV/R2;
-- apply listed D1 migrations;
-- persist generated Wrangler resource IDs back to the bot repository;
-- optionally verify a health URL.
+```json
+{
+  "guild-a": {
+    "account_id": "0123456789abcdef0123456789abcdef",
+    "token_secret": "CLOUDFLARE_GUILD_A_API_TOKEN"
+  },
+  "guild-b": {
+    "account_id": "fedcba9876543210fedcba9876543210",
+    "token_secret": "CLOUDFLARE_GUILD_B_API_TOKEN"
+  }
+}
+```
 
-### Persistent Node/Docker bots
+This JSON is stored as the GitHub Actions repository variable `CLOUDFLARE_ACCOUNTS_JSON`.
 
-Persistent Gateway bots deploy to an Oracle Cloud free-tier VM.
+Each `token_secret` points to a separate GitHub Actions secret containing an API token scoped only to that Cloudflare account.
 
-Factory can:
+## What Factory does
 
-- create/reuse the Factory VCN, subnet, Internet Gateway, routes, and SSH security rule;
-- create/reuse one supported free-tier VM;
-- install/harden Docker host prerequisites on first boot;
-- build each bot as its own Docker container;
-- provide its runtime secrets through a protected env file;
-- start it with Docker's `unless-stopped` restart policy;
-- verify the container remains running after startup.
+- checks out the existing bot repository;
+- requires an explicit `cloudflare_account` assignment;
+- selects the corresponding Cloudflare Account ID and API token;
+- installs dependencies;
+- deploys with Wrangler;
+- supplies bot runtime secrets;
+- allows Wrangler to provision supported resources;
+- optionally applies listed D1 migrations;
+- persists Wrangler-generated resource IDs back to the bot repository;
+- optionally checks a health URL.
 
-Factory never falls back to a paid OCI shape.
+## What Factory does not do
 
-## Repository manifest
+- create GitHub repositories;
+- deploy to Oracle/VPS/other providers;
+- spread one bot across accounts automatically;
+- move a bot to another account when quota is reached;
+- continuously monitor or operate the bot after deployment.
 
-For deterministic deployments, bot repositories should contain `bot-factory.json`.
-
-See [BOT_MANIFEST.md](docs/BOT_MANIFEST.md).
-
-If the manifest is absent, Factory performs conservative auto-detection and refuses ambiguous repositories.
-
-## Setup
-
-See [SETUP.md](docs/SETUP.md).
+See [SETUP.md](docs/SETUP.md) for setup and [BOT_MANIFEST.md](docs/BOT_MANIFEST.md) for the bot manifest.
