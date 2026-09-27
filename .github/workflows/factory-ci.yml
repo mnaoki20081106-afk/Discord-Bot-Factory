@@ -87,7 +87,8 @@ jobs:
             "runtime": "worker",
             "working_directory": "apps/worker",
             "wrangler_config": "wrangler.jsonc",
-            "d1_migrations": ["DB"],
+            "d1_migrations": [],
+            "d1_schema_files": [{"binding":"DB","file":"schema.sql"}],
             "setup": {
               "fields": [
                 {
@@ -110,11 +111,13 @@ jobs:
           }
           JSON
           printf '{}\n' > "$tmp/apps/worker/wrangler.jsonc"
+          printf 'CREATE TABLE IF NOT EXISTS t(id INTEGER PRIMARY KEY);\n' > "$tmp/apps/worker/schema.sql"
 
           output="$(node scripts/read-manifest.mjs "$tmp" owner/repo)"
           printf '%s\n' "$output" | grep -F 'test-worker'
           printf '%s\n' "$output" | grep -F 'apps/worker'
           printf '%s\n' "$output" | grep -F 'wrangler.jsonc'
+          printf '%s\n' "$output" | grep -F 'schema.sql'
 
       - name: Reject non-Cloudflare manifest
         run: |
