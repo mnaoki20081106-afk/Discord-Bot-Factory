@@ -69,7 +69,13 @@ jobs:
 
       - name: Install dependencies
         working-directory: apps/control-plane
-        run: npm install
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
 
       - name: Build Control Plane secrets file
         id: secrets
@@ -100,20 +106,25 @@ jobs:
         working-directory: apps/control-plane
         run: npx wrangler d1 execute DB --remote --file=./schema.sql
 
-      - name: Persist auto-provisioned Control Plane D1 binding
+      - name: Persist generated Control Plane metadata
         shell: bash
         run: |
           set -euo pipefail
 
-          if git diff --quiet -- apps/control-plane/wrangler.jsonc; then
-            echo "Control Plane Wrangler config did not change."
+          if [[ -z "$(git status --porcelain -- apps/control-plane/wrangler.jsonc apps/control-plane/package-lock.json)" ]]; then
+            echo "No generated Control Plane metadata changed."
             exit 0
           fi
 
           git config user.name "discord-bot-factory[bot]"
           git config user.email "discord-bot-factory[bot]@users.noreply.github.com"
-          git add apps/control-plane/wrangler.jsonc
-          git commit -m "chore(control-plane): persist D1 binding"
+          git add -- apps/control-plane/wrangler.jsonc
+          if [[ -f apps/control-plane/package-lock.json ]]; then
+            git add -- apps/control-plane/package-lock.json
+          fi
+          git commit -m "chore(control-plane): persist generated metadata"
+          git fetch origin main
+          git rebase origin/main
           git push origin HEAD:main
 
       - name: Remove temporary secrets file
