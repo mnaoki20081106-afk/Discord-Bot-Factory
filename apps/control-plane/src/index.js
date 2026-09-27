@@ -771,6 +771,9 @@ async function handleApi(request, env, url) {
       const body = await request.json();
       const repository = validateRepoName(body.repository, env);
       const ref = String(body.ref || "main").trim();
+      if (!ref || ref.length > 255 || /[\u0000-\u001f\u007f]/.test(ref)) {
+        throw new Error("GitHub Branch / Refの形式が不正です。");
+      }
       const accountAlias = String(body.account_alias || "").trim();
       const provided = body.fields && typeof body.fields === "object" ? body.fields : {};
       const confirmed = new Set(Array.isArray(body.confirmed_requirements) ? body.confirmed_requirements.map(String) : []);
@@ -842,6 +845,15 @@ async function handleApi(request, env, url) {
         }
       }
 
+      const factoryRepo = String(env.FACTORY_GITHUB_REPO || "").trim();
+      const factoryRef = String(env.FACTORY_GITHUB_REF || "main").trim();
+      if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(factoryRepo)) {
+        throw new Error("FACTORY_GITHUB_REPO が未設定または不正です。");
+      }
+      if (!factoryRef || /[\u0000-\u001f\u007f]/.test(factoryRef)) {
+        throw new Error("FACTORY_GITHUB_REF が不正です。");
+      }
+
       const cloudflareToken = await decryptValue(env, account.encrypted_token);
       const id = crypto.randomUUID();
       const createdAt = nowIso();
@@ -874,19 +886,25 @@ async function handleApi(request, env, url) {
         expiresAt,
       ).run();
 
-      const factoryRepo = String(env.FACTORY_GITHUB_REPO || "");
-      if (!factoryRepo.includes("/")) throw new Error("FACTORY_GITHUB_REPO が未設定です。");
-      const dispatch = await githubFetch(
-        github.value,
-        `/repos/${factoryRepo}/actions/workflows/deploy-bot.yml/dispatches`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            ref: env.FACTORY_GITHUB_REF || "main",
-            inputs: { job_id: id, confirm: "DEPLOY" },
-          }),
-        },
-      );
+      let dispatch;
+      try {
+        dispatch = await githubFetch(
+          github.value,
+          `/repos/${factoryRepo}/actions/workflows/deploy-bot.yml/dispatches`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              ref: factoryRef,
+              inputs: { job_id: id, confirm: "DEPLOY" },
+            }),
+          },
+        );
+      } catch (error) {
+        await env.DB.prepare(
+          "UPDATE deployments SET status = 'dispatch_failed', conclusion = ? WHERE id = ?",
+        ).bind("github_network_error", id).run();
+        throw new Error(`GitHub Actionsへの接続に失敗しました: ${error?.message || error}`);
+      }
 
       if (!dispatch.ok) {
         const detail = await dispatch.text();
