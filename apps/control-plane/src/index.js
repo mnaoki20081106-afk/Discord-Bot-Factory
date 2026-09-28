@@ -1,6 +1,92 @@
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+const DISCORD_PERMISSION_BITS = Object.freeze({
+  CREATE_INSTANT_INVITE: 1n,
+  KICK_MEMBERS: 2n,
+  BAN_MEMBERS: 4n,
+  ADMINISTRATOR: 8n,
+  MANAGE_CHANNELS: 16n,
+  MANAGE_GUILD: 32n,
+  ADD_REACTIONS: 64n,
+  VIEW_AUDIT_LOG: 128n,
+  PRIORITY_SPEAKER: 256n,
+  STREAM: 512n,
+  VIEW_CHANNEL: 1024n,
+  SEND_MESSAGES: 2048n,
+  SEND_TTS_MESSAGES: 4096n,
+  MANAGE_MESSAGES: 8192n,
+  EMBED_LINKS: 16384n,
+  ATTACH_FILES: 32768n,
+  READ_MESSAGE_HISTORY: 65536n,
+  MENTION_EVERYONE: 131072n,
+  USE_EXTERNAL_EMOJIS: 262144n,
+  VIEW_GUILD_INSIGHTS: 524288n,
+  CONNECT: 1048576n,
+  SPEAK: 2097152n,
+  MUTE_MEMBERS: 4194304n,
+  DEAFEN_MEMBERS: 8388608n,
+  MOVE_MEMBERS: 16777216n,
+  USE_VAD: 33554432n,
+  CHANGE_NICKNAME: 67108864n,
+  MANAGE_NICKNAMES: 134217728n,
+  MANAGE_ROLES: 268435456n,
+  MANAGE_WEBHOOKS: 536870912n,
+  MANAGE_GUILD_EXPRESSIONS: 1073741824n,
+  USE_APPLICATION_COMMANDS: 2147483648n,
+  REQUEST_TO_SPEAK: 4294967296n,
+  MANAGE_EVENTS: 8589934592n,
+  MANAGE_THREADS: 17179869184n,
+  CREATE_PUBLIC_THREADS: 34359738368n,
+  CREATE_PRIVATE_THREADS: 68719476736n,
+  USE_EXTERNAL_STICKERS: 137438953472n,
+  SEND_MESSAGES_IN_THREADS: 274877906944n,
+  USE_EMBEDDED_ACTIVITIES: 549755813888n,
+  MODERATE_MEMBERS: 1099511627776n,
+  VIEW_CREATOR_MONETIZATION_ANALYTICS: 2199023255552n,
+  USE_SOUNDBOARD: 4398046511104n,
+  CREATE_GUILD_EXPRESSIONS: 8796093022208n,
+  CREATE_EVENTS: 17592186044416n,
+  USE_EXTERNAL_SOUNDS: 35184372088832n,
+  SEND_VOICE_MESSAGES: 70368744177664n,
+});
+
+const DISCORD_PERMISSION_ID_FALLBACKS = Object.freeze({
+  "create-instant-invite": "CREATE_INSTANT_INVITE",
+  "kick-members": "KICK_MEMBERS",
+  "ban-members": "BAN_MEMBERS",
+  "administrator": "ADMINISTRATOR",
+  "manage-channels": "MANAGE_CHANNELS",
+  "manage-guild": "MANAGE_GUILD",
+  "manage-server": "MANAGE_GUILD",
+  "add-reactions": "ADD_REACTIONS",
+  "view-audit-log": "VIEW_AUDIT_LOG",
+  "view-channels": "VIEW_CHANNEL",
+  "view-channel": "VIEW_CHANNEL",
+  "send-messages": "SEND_MESSAGES",
+  "manage-messages": "MANAGE_MESSAGES",
+  "embed-links": "EMBED_LINKS",
+  "attach-files": "ATTACH_FILES",
+  "read-history": "READ_MESSAGE_HISTORY",
+  "read-message-history": "READ_MESSAGE_HISTORY",
+  "mention-everyone": "MENTION_EVERYONE",
+  "connect": "CONNECT",
+  "speak": "SPEAK",
+  "mute-members": "MUTE_MEMBERS",
+  "deafen-members": "DEAFEN_MEMBERS",
+  "move-members": "MOVE_MEMBERS",
+  "manage-nicknames": "MANAGE_NICKNAMES",
+  "manage-roles": "MANAGE_ROLES",
+  "manage-webhooks": "MANAGE_WEBHOOKS",
+  "use-application-commands": "USE_APPLICATION_COMMANDS",
+  "manage-events": "MANAGE_EVENTS",
+  "manage-threads": "MANAGE_THREADS",
+  "create-public-threads": "CREATE_PUBLIC_THREADS",
+  "create-private-threads": "CREATE_PRIVATE_THREADS",
+  "send-messages-in-threads": "SEND_MESSAGES_IN_THREADS",
+  "moderate-members": "MODERATE_MEMBERS",
+});
+
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -315,6 +401,12 @@ function normalizeSetup(manifest) {
       if (!item || typeof item !== "object" || Array.isArray(item)) {
         throw new Error(`Discord設定 ${prefix}[${index}] の形式が不正です。`);
       }
+      const discordPermission = prefix === "permission"
+        ? String(item.discord_permission || "").trim().toUpperCase()
+        : "";
+      if (discordPermission && !Object.prototype.hasOwnProperty.call(DISCORD_PERMISSION_BITS, discordPermission)) {
+        throw new Error(`Discord権限「${item.label || item.name || item.id || index}」のdiscord_permissionが未対応です。`);
+      }
       return {
         id: String(item.id || `${prefix}-${index}`),
         label: String(item.label || item.name || "設定"),
@@ -322,6 +414,7 @@ function normalizeSetup(manifest) {
         description: String(item.description || item.reason || ""),
         path: String(item.path || ""),
         url: normalizeHttpUrl(item.url, `Discord設定 ${item.label || item.name || item.id || `${prefix}-${index}`}`),
+        discord_permission: discordPermission,
       };
     });
   }
@@ -348,6 +441,42 @@ function normalizeSetup(manifest) {
       notes: Array.isArray(discord.notes) ? discord.notes.map(String) : [],
     },
   };
+}
+
+function discordPermissionBitfield(permissions) {
+  let value = 0n;
+  const unknown = [];
+  for (const item of permissions || []) {
+    const explicit = String(item.discord_permission || "").trim().toUpperCase();
+    const permissionName = explicit || DISCORD_PERMISSION_ID_FALLBACKS[String(item.id || "").trim().toLowerCase()] || "";
+    const bit = permissionName ? DISCORD_PERMISSION_BITS[permissionName] : undefined;
+    if (bit === undefined) {
+      unknown.push(String(item.id || item.label || "unknown"));
+      continue;
+    }
+    value |= bit;
+  }
+  if (unknown.length) {
+    throw new Error(
+      "Discord招待URLを安全に生成できません。bot-factory.json の権限 " +
+      unknown.join(", ") +
+      " に discord_permission を設定してください。",
+    );
+  }
+  return value;
+}
+
+function buildDiscordInviteUrl(setup, profile) {
+  const applicationId = String(profile?.fields?.DISCORD_APPLICATION_ID || "").trim();
+  if (!/^\d{17,20}$/.test(applicationId)) {
+    throw new Error("DISCORD_APPLICATION_ID が保存されていないか形式が不正です。設定を復元してApplication IDを確認してください。");
+  }
+  const permissions = discordPermissionBitfield(setup?.discord?.permissions || []);
+  const invite = new URL("https://discord.com/oauth2/authorize");
+  invite.searchParams.set("client_id", applicationId);
+  invite.searchParams.set("permissions", permissions.toString());
+  invite.searchParams.set("scope", "bot applications.commands");
+  return invite.toString();
 }
 
 function validateFieldValue(field, raw) {
@@ -1236,6 +1365,49 @@ async function handleApi(request, env, url) {
     try {
       const restore = await loadDeploymentRestoreState(env, restoreMatch[1]);
       return json({ ok: true, restore });
+    } catch (error) {
+      return json({ error: error.message }, 400);
+    }
+  }
+
+  const discordInviteMatch = url.pathname.match(/^\/api\/deployments\/([^/]+)\/discord-invite$/);
+  if (discordInviteMatch && request.method === "GET") {
+    try {
+      const deployment = await env.DB.prepare(
+        `SELECT id, repository, ref, account_alias, status
+         FROM deployments
+         WHERE id = ?`,
+      ).bind(discordInviteMatch[1]).first();
+      if (!deployment) return json({ error: "起動履歴が見つかりません。" }, 404);
+      if (deployment.status !== "completed") {
+        return json({ error: "Discordへの追加はデプロイ成功後に実行してください。" }, 409);
+      }
+
+      const profile = await loadDeploymentProfile(env, deployment.repository, deployment.account_alias);
+      if (!profile) {
+        return json({ error: "保存済み設定がありません。設定を復元して再起動してください。" }, 409);
+      }
+
+      const github = await getSetting(env, "github_pat");
+      if (!github) return json({ error: "GitHub Tokenが未登録です。" }, 409);
+      const manifest = await fetchManifest(env, github.value, deployment.repository, deployment.ref);
+      const setup = normalizeSetup(manifest);
+      const inviteUrl = buildDiscordInviteUrl(setup, profile);
+
+      await audit(env, "discord_invite_opened", {
+        deployment_id: deployment.id,
+        repository: deployment.repository,
+        account_alias: deployment.account_alias,
+      });
+
+      return new Response(null, {
+        status: 302,
+        headers: {
+          location: inviteUrl,
+          "cache-control": "no-store",
+          "referrer-policy": "no-referrer",
+        },
+      });
     } catch (error) {
       return json({ error: error.message }, 400);
     }
