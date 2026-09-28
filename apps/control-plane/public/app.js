@@ -392,6 +392,15 @@ async function loadHistory() {
     right.append(element("span", "status " + row.status, row.conclusion || row.status));
 
     const terminal = ["completed", "failed", "dispatch_failed", "expired"].includes(row.status);
+
+    if (row.status === "completed") {
+      const invite = element("a", "ghost", "Discordに追加");
+      invite.href = "/api/deployments/" + encodeURIComponent(row.id) + "/discord-invite";
+      invite.target = "_blank";
+      invite.rel = "noreferrer";
+      right.append(invite);
+    }
+
     if (terminal && Number(row.can_restart || 0) === 1) {
       const restore = element("button", "ghost", "設定を復元");
       restore.type = "button";
