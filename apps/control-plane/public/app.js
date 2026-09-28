@@ -140,7 +140,7 @@ function makeField(field) {
   } else {
     input.required = Boolean(field.required);
   }
-  if (isNewField) title.append(element("span", "tag", "追加項目"));
+  if (isNewField) title.append(element("span", "tag", "未設定 / 追加"));
   wrap.append(input);
 
   if (field.help) wrap.append(element("small", "hint", field.help));
@@ -185,7 +185,7 @@ function makeRequirement(item) {
   const strong = element("strong", "", item.label);
   if (item.required) strong.append(element("em", "tag", "必須"));
   if (state.restoredProfile && (state.restoredProfile.new_requirement_ids || []).includes(item.id)) {
-    strong.append(element("em", "tag", "追加設定"));
+    strong.append(element("em", "tag", "要確認"));
   }
   body.append(strong);
   if (item.description) body.append(element("small", "", item.description));
@@ -522,7 +522,13 @@ $("repoSelect").addEventListener("change", () => {
   loadManifest();
 });
 $("repoRef").addEventListener("change", loadManifest);
-$("accountSelect").addEventListener("change", updateLaunchState);
+$("accountSelect").addEventListener("change", () => {
+  if (state.restoredProfile && $("accountSelect").value !== state.restoredProfile.account_alias) {
+    state.restoredProfile = null;
+    renderSetup();
+  }
+  updateLaunchState();
+});
 $("discordStep").addEventListener("input", updateLaunchState);
 $("discordStep").addEventListener("change", updateLaunchState);
 
@@ -600,18 +606,21 @@ $("historyList").addEventListener("click", async (event) => {
       await loadManifest({ preserveRestore: true });
       $("accountSelect").value = restored.account_alias;
 
-      const addedCount = (restored.new_field_keys || []).length + (restored.new_requirement_ids || []).length;
+      const reviewCount = (restored.new_field_keys || []).length + (restored.new_requirement_ids || []).length;
       const missingCount = (restored.missing_required_field_keys || []).length + (restored.missing_required_requirement_ids || []).length;
       const message = missingCount
-        ? "前回の設定を復元しました。追加・未設定の必須項目だけ入力 / 確認してください。"
-        : addedCount
-          ? "前回の設定を復元しました。追加項目を確認して、そのまま再起動できます。"
-          : "前回の設定を復元しました。必要な項目だけ変更して再起動できます。";
+        ? "保存済み設定を復元しました。追加・未設定の必須項目だけ入力 / 確認してください。"
+        : reviewCount
+          ? "保存済み設定を復元しました。未設定または追加された項目を確認して再起動できます。"
+          : "保存済み設定を復元しました。必要な項目だけ変更して再起動できます。";
       setStateText("manifestState", message, "good");
       updateLaunchState();
     } catch (error) {
       state.restoredProfile = null;
-      setStateText("historyState", error.message, "error");
+      const hint = /必須|確認/.test(error.message)
+      ? " 「設定を復元」から現在の追加項目を入力 / 確認してください。"
+      : "";
+    setStateText("historyState", error.message + hint, "error");
     } finally {
       button.disabled = false;
       button.textContent = originalText;
