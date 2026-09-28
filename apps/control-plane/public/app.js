@@ -599,6 +599,9 @@ $("historyList").addEventListener("click", async (event) => {
       const restored = data.restore;
       state.restoredProfile = restored;
 
+      if (!Array.from($("repoSelect").options).some((item) => item.value === restored.repository)) {
+        $("repoSelect").append(option(restored.repository, restored.repository));
+      }
       $("repoSelect").value = restored.repository;
       $("repoRef").value = restored.ref || "main";
       $("accountSelect").value = restored.account_alias;
@@ -617,10 +620,7 @@ $("historyList").addEventListener("click", async (event) => {
       updateLaunchState();
     } catch (error) {
       state.restoredProfile = null;
-      const hint = /必須|確認/.test(error.message)
-      ? " 「設定を復元」から現在の追加項目を入力 / 確認してください。"
-      : "";
-    setStateText("historyState", error.message + hint, "error");
+      setStateText("historyState", error.message, "error");
     } finally {
       button.disabled = false;
       button.textContent = originalText;
@@ -650,7 +650,10 @@ $("historyList").addEventListener("click", async (event) => {
   } catch (error) {
     button.disabled = false;
     button.textContent = originalText;
-    setStateText("historyState", error.message, "error");
+    const hint = /必須|確認/.test(error.message)
+      ? " 「設定を復元」から現在の追加・未設定項目を入力 / 確認してください。"
+      : "";
+    setStateText("historyState", error.message + hint, "error");
   }
 });
 
