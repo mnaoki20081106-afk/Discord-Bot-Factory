@@ -40,6 +40,8 @@ jobs:
           const { webcrypto } = require("node:crypto");
           const crypto = webcrypto;
 
+          (async () => {
+
           const cpToken = process.env.CONTROL_CF_TOKEN;
           const cpAccount = process.env.CONTROL_CF_ACCOUNT_ID;
           const masterB64 = process.env.CONTROL_MASTER_KEY;
@@ -189,4 +191,8 @@ jobs:
           });
 
           console.log("MEMBER_ACTIVITY_DIAGNOSTIC=" + JSON.stringify(safe));
+          })().catch(error => {
+            console.error(error instanceof Error ? error.message : String(error));
+            process.exitCode = 1;
+          });
           NODE
