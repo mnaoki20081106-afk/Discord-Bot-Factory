@@ -1,0 +1,47 @@
+name: Diagnose Xaccount member activity
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/diagnose-xaccount-member-activity.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CONTROL_PLANE_CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CONTROL_PLANE_CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Checkout Xaccount-Bot
+        run: git clone --depth 1 https://github.com/mnaoki20081106-afk/Xaccount-Bot.git source
+
+      - name: Read live Worker health
+        run: |
+          set -euo pipefail
+          curl -fsS --retry 3 --retry-delay 1 \
+            https://xaccount-bot.mnaoki20081106.workers.dev/health
+          echo
+
+      - name: Read member activity settings from production D1
+        working-directory: source/apps/worker
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4.142.0 d1 execute DB --remote --config wrangler.jsonc \
+            --command "SELECT guild_id, enabled, channel_id, join_enabled, leave_enabled, initialized, last_scan_at, last_member_count, substr(coalesce(last_error,''),1,300) AS last_error FROM member_activity_settings ORDER BY updated_at DESC LIMIT 25;"
+
+      - name: Read member activity snapshot counts from production D1
+        working-directory: source/apps/worker
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4.142.0 d1 execute DB --remote --config wrangler.jsonc \
+            --command "SELECT guild_id, COUNT(*) AS snapshot_members, MAX(last_seen_at) AS newest_seen_at FROM member_activity_members GROUP BY guild_id ORDER BY newest_seen_at DESC LIMIT 25;"
