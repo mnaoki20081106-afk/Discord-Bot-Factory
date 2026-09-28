@@ -12,6 +12,7 @@ Normal operation is done from the site:
 6. After required settings are confirmed, press **BOTを起動**.
 7. The Control Plane creates an encrypted short-lived deployment job and starts the GitHub Actions deployment workflow using only the job ID.
 8. GitHub Actions claims the job, deploys the Worker, applies configured D1 migrations, and reports the result back to the site.
+9. After a successful deployment, press **Discordに追加** in the history. Factory generates the official Discord OAuth2 guild-install URL from the saved Application ID and the bot's declared permissions.
 
 ## Security model
 
