@@ -681,6 +681,85 @@ async function loadDeploymentProfile(env, repository, accountAlias) {
   };
 }
 
+async function loadDeploymentRestoreState(env, deploymentId) {
+  const previous = await env.DB.prepare(
+    `SELECT id, repository, ref, account_alias
+     FROM deployments
+     WHERE id = ?`,
+  ).bind(deploymentId).first();
+  if (!previous) throw new Error("起動履歴が見つかりません。");
+
+  const profile = await loadDeploymentProfile(env, previous.repository, previous.account_alias);
+  if (!profile) {
+    throw new Error("この履歴には保存済み設定がありません。通常起動から一度起動してください。");
+  }
+
+  const github = await getSetting(env, "github_pat");
+  if (!github) throw new Error("GitHub Tokenが未登録です。");
+
+  const manifest = await fetchManifest(env, github.value, previous.repository, previous.ref);
+  const setup = normalizeSetup(manifest);
+  const fields = {};
+  const savedSecretKeys = [];
+  const newFieldKeys = [];
+
+  for (const field of setup.fields) {
+    if (field.generate) continue;
+    const hasSaved = Object.prototype.hasOwnProperty.call(profile.fields, field.key);
+    if (!hasSaved) {
+      newFieldKeys.push(field.key);
+      continue;
+    }
+
+    const saved = profile.fields[field.key];
+    if (field.type === "secret") {
+      if (String(saved ?? "").trim()) savedSecretKeys.push(field.key);
+      continue;
+    }
+    fields[field.key] = saved;
+  }
+
+  const requirements = [
+    ...setup.discord.intents,
+    ...setup.discord.permissions,
+    ...setup.discord.checks,
+  ];
+  const currentRequirementIds = new Set(requirements.map((item) => item.id));
+  const confirmedRequirements = profile.confirmed_requirements.filter((id) => currentRequirementIds.has(id));
+  const confirmedSet = new Set(confirmedRequirements);
+  const newRequirementIds = requirements
+    .filter((item) => !confirmedSet.has(item.id))
+    .map((item) => item.id);
+
+  const missingRequiredFieldKeys = setup.fields
+    .filter((field) => {
+      if (!field.required || field.generate) return false;
+      if (!Object.prototype.hasOwnProperty.call(profile.fields, field.key)) return true;
+      const saved = profile.fields[field.key];
+      if (field.type === "boolean") return typeof saved !== "boolean";
+      return !String(saved ?? "").trim();
+    })
+    .map((field) => field.key);
+
+  const missingRequiredRequirementIds = requirements
+    .filter((item) => item.required && !confirmedSet.has(item.id))
+    .map((item) => item.id);
+
+  return {
+    deployment_id: previous.id,
+    repository: previous.repository,
+    ref: previous.ref,
+    account_alias: previous.account_alias,
+    fields,
+    saved_secret_keys: savedSecretKeys,
+    confirmed_requirements: confirmedRequirements,
+    new_field_keys: newFieldKeys,
+    new_requirement_ids: newRequirementIds,
+    missing_required_field_keys: missingRequiredFieldKeys,
+    missing_required_requirement_ids: missingRequiredRequirementIds,
+  };
+}
+
 async function createDeployment(env, input) {
   const repository = validateRepoName(input.repository, env);
   const ref = String(input.ref || "main").trim();
@@ -1115,15 +1194,48 @@ async function handleApi(request, env, url) {
   if (url.pathname === "/api/deployments" && request.method === "POST") {
     try {
       const body = await request.json();
+      let fields = body.fields && typeof body.fields === "object" ? body.fields : {};
+      let restartOf = null;
+
+      if (body.restore_from_deployment_id) {
+        const restoreId = String(body.restore_from_deployment_id);
+        const previous = await env.DB.prepare(
+          `SELECT id, repository, account_alias
+           FROM deployments
+           WHERE id = ?`,
+        ).bind(restoreId).first();
+        if (!previous) throw new Error("復元元の起動履歴が見つかりません。");
+        if (previous.repository !== String(body.repository || "") ||
+            previous.account_alias !== String(body.account_alias || "")) {
+          throw new Error("復元元とリポジトリ / Cloudflare Accountが一致しません。");
+        }
+
+        const profile = await loadDeploymentProfile(env, previous.repository, previous.account_alias);
+        if (!profile) throw new Error("復元できる保存済み設定がありません。");
+        fields = { ...profile.fields, ...fields };
+        restartOf = previous.id;
+      }
+
       const deployment = await createDeployment(env, {
         repository: body.repository,
         ref: body.ref,
         account_alias: body.account_alias,
-        fields: body.fields,
+        fields,
         confirmed_requirements: body.confirmed_requirements,
         save_profile: true,
+        restart_of: restartOf,
       });
       return json({ ok: true, deployment });
+    } catch (error) {
+      return json({ error: error.message }, 400);
+    }
+  }
+
+  const restoreMatch = url.pathname.match(/^\/api\/deployments\/([^/]+)\/restore$/);
+  if (restoreMatch && request.method === "GET") {
+    try {
+      const restore = await loadDeploymentRestoreState(env, restoreMatch[1]);
+      return json({ ok: true, restore });
     } catch (error) {
       return json({ error: error.message }, 400);
     }
