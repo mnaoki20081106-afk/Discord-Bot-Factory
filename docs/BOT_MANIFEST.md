@@ -111,7 +111,13 @@ Each checklist item can contain:
 - `label`: text shown to the operator.
 - `required`: default true.
 - `description`: why the setting is required.
-- `path`: where to enable/configure it.\n- `url`: optional direct link shown as 「設定画面を開く」.
+- `path`: where to enable/configure it.
+- `url`: optional direct link shown as 「設定画面を開く」.
+- `discord_permission`: for items in `permissions`, the Discord permission constant used to build the post-deploy OAuth2 invite. Examples: `VIEW_CHANNEL`, `SEND_MESSAGES`, `EMBED_LINKS`, `MANAGE_ROLES`.
+
+After a successful deployment, Factory shows **Discordに追加** in the deployment history. The button uses the saved `DISCORD_APPLICATION_ID` and the manifest permissions to open Discord's official guild-install OAuth2 flow with the `bot` and `applications.commands` scopes.
+
+For backward compatibility, Factory recognizes common permission IDs such as `view-channels`, `send-messages`, `embed-links`, `attach-files`, `read-history`, `manage-channels`, and `manage-roles`. New manifests should set `discord_permission` explicitly so invite permissions never depend on naming conventions.
 
 Example:
 
@@ -133,13 +139,15 @@ Example:
           "id": "manage-roles",
           "label": "ロールの管理",
           "required": true,
-          "description": "認証ロールを付与するために必要です。"
+          "description": "認証ロールを付与するために必要です。",
+          "discord_permission": "MANAGE_ROLES"
         },
         {
           "id": "manage-channels",
           "label": "チャンネルの管理",
           "required": true,
-          "description": "チャンネル権限を変更するために必要です。"
+          "description": "チャンネル権限を変更するために必要です。",
+          "discord_permission": "MANAGE_CHANNELS"
         }
       ],
       "checks": [
