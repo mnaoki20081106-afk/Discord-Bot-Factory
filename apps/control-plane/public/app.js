@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { repositories: [], accounts: [], manifest: null, setup: null, repository: "", ref: "main", manifestRequest: 0 };
+const state = { repositories: [], accounts: [], manifest: null, setup: null, repository: "", ref: "main", manifestRequest: 0, restoredProfile: null };
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -119,7 +119,28 @@ function makeField(field) {
   }
   input.id = "field-" + field.key;
   input.dataset.field = field.key;
-  input.required = Boolean(field.required);
+
+  const restored = state.restoredProfile;
+  const hasRestoredValue = Boolean(restored && Object.prototype.hasOwnProperty.call(restored.fields || {}, field.key));
+  const hasSavedSecret = Boolean(
+    restored &&
+    field.type === "secret" &&
+    (restored.saved_secret_keys || []).includes(field.key),
+  );
+  const isNewField = Boolean(restored && (restored.new_field_keys || []).includes(field.key));
+
+  if (hasRestoredValue) {
+    const value = restored.fields[field.key];
+    input.value = field.type === "boolean" ? (value === true ? "true" : value === false ? "false" : "") : String(value ?? "");
+  }
+  if (hasSavedSecret) {
+    input.placeholder = "保存済みの値を使用します（変更する場合のみ入力）";
+    input.required = false;
+    title.append(element("span", "tag", "保存済み"));
+  } else {
+    input.required = Boolean(field.required);
+  }
+  if (isNewField) title.append(element("span", "tag", "追加項目"));
   wrap.append(input);
 
   if (field.help) wrap.append(element("small", "hint", field.help));
@@ -156,10 +177,16 @@ function makeRequirement(item) {
   check.type = "checkbox";
   check.dataset.requirement = item.id;
   check.dataset.required = item.required ? "1" : "0";
+  if (state.restoredProfile && (state.restoredProfile.confirmed_requirements || []).includes(item.id)) {
+    check.checked = true;
+  }
 
   const body = element("span");
   const strong = element("strong", "", item.label);
   if (item.required) strong.append(element("em", "tag", "必須"));
+  if (state.restoredProfile && (state.restoredProfile.new_requirement_ids || []).includes(item.id)) {
+    strong.append(element("em", "tag", "追加設定"));
+  }
   body.append(strong);
   if (item.description) body.append(element("small", "", item.description));
   if (item.path) body.append(element("small", "", "設定場所: " + item.path));
@@ -221,6 +248,15 @@ function fieldsValid() {
     const el = $("field-" + field.key);
     if (!el) return !field.required;
     if (field.type === "boolean") return !field.required || el.value === "true" || el.value === "false";
+    if (
+      field.type === "secret" &&
+      field.required &&
+      !el.value.trim() &&
+      state.restoredProfile &&
+      (state.restoredProfile.saved_secret_keys || []).includes(field.key)
+    ) {
+      return true;
+    }
     return !field.required || Boolean(el.value.trim());
   });
 }
@@ -239,6 +275,7 @@ function updateSteps() {
 function updateLaunchState() {
   updateSteps();
   $("launchButton").disabled = !canLaunch();
+  $("launchButton").textContent = state.restoredProfile ? "設定を更新して再起動" : "BOTを起動";
 
   const account = state.accounts.find((x) => x.alias === $("accountSelect").value);
   clear($("launchSummary"));
@@ -255,7 +292,10 @@ function updateLaunchState() {
   }
 }
 
-async function loadManifest() {
+async function loadManifest(options = {}) {
+  const preserveRestore = options && options.preserveRestore === true;
+  if (!preserveRestore) state.restoredProfile = null;
+
   const requestId = ++state.manifestRequest;
   state.repository = $("repoSelect").value;
   state.ref = $("repoRef").value.trim() || "main";
@@ -353,6 +393,11 @@ async function loadHistory() {
 
     const terminal = ["completed", "failed", "dispatch_failed", "expired"].includes(row.status);
     if (terminal && Number(row.can_restart || 0) === 1) {
+      const restore = element("button", "ghost", "設定を復元");
+      restore.type = "button";
+      restore.dataset.restoreDeployment = row.id;
+      right.append(restore);
+
       const restart = element("button", "ghost", "再起動");
       restart.type = "button";
       restart.dataset.restartDeployment = row.id;
@@ -493,6 +538,14 @@ $("launchButton").addEventListener("click", async () => {
       if (el.value === "") continue;
       fields[field.key] = el.value === "true";
     } else {
+      if (
+        field.type === "secret" &&
+        !el.value &&
+        state.restoredProfile &&
+        (state.restoredProfile.saved_secret_keys || []).includes(field.key)
+      ) {
+        continue;
+      }
       fields[field.key] = el.value;
     }
   }
@@ -509,9 +562,11 @@ $("launchButton").addEventListener("click", async () => {
         account_alias: $("accountSelect").value,
         fields,
         confirmed_requirements: confirmed,
+        restore_from_deployment_id: state.restoredProfile?.deployment_id || null,
       }),
     });
-    setStateText("launchState", "起動処理を開始しました。履歴から状態を確認できます。", "good");
+    setStateText("launchState", state.restoredProfile ? "保存済み設定を更新して再起動を開始しました。" : "起動処理を開始しました。履歴から状態を確認できます。", "good");
+    state.restoredProfile = null;
     setTab("history");
     await loadHistory();
     if (data.deployment && data.deployment.id) {
@@ -525,6 +580,45 @@ $("launchButton").addEventListener("click", async () => {
 });
 
 $("historyList").addEventListener("click", async (event) => {
+  const restoreId = event.target && event.target.dataset ? event.target.dataset.restoreDeployment : "";
+  if (restoreId) {
+    const button = event.target;
+    button.disabled = true;
+    const originalText = button.textContent;
+    button.textContent = "復元中…";
+    setStateText("historyState", "保存済み設定と現在のbot-factory.jsonを照合しています…");
+
+    try {
+      const data = await api("/api/deployments/" + encodeURIComponent(restoreId) + "/restore");
+      const restored = data.restore;
+      state.restoredProfile = restored;
+
+      $("repoSelect").value = restored.repository;
+      $("repoRef").value = restored.ref || "main";
+      $("accountSelect").value = restored.account_alias;
+      setTab("deploy");
+      await loadManifest({ preserveRestore: true });
+      $("accountSelect").value = restored.account_alias;
+
+      const addedCount = (restored.new_field_keys || []).length + (restored.new_requirement_ids || []).length;
+      const missingCount = (restored.missing_required_field_keys || []).length + (restored.missing_required_requirement_ids || []).length;
+      const message = missingCount
+        ? "前回の設定を復元しました。追加・未設定の必須項目だけ入力 / 確認してください。"
+        : addedCount
+          ? "前回の設定を復元しました。追加項目を確認して、そのまま再起動できます。"
+          : "前回の設定を復元しました。必要な項目だけ変更して再起動できます。";
+      setStateText("manifestState", message, "good");
+      updateLaunchState();
+    } catch (error) {
+      state.restoredProfile = null;
+      setStateText("historyState", error.message, "error");
+    } finally {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+    return;
+  }
+
   const id = event.target && event.target.dataset ? event.target.dataset.restartDeployment : "";
   if (!id) return;
 
