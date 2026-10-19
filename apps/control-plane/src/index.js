@@ -900,7 +900,10 @@ async function collectMwsEnv(env, { manifest, repository, accountAlias, fields, 
   }
   const provided = fields && typeof fields === "object" ? fields : {};
   const vars = {};
-  const constants = manifest.mws_env && typeof manifest.mws_env === "object" ? manifest.mws_env : {};
+  const constants = {
+    ...(manifest.mws_env && typeof manifest.mws_env === "object" ? manifest.mws_env : {}),
+    ...(manifest.vps_env && typeof manifest.vps_env === "object" ? manifest.vps_env : {}),
+  };
   for (const [key, value] of Object.entries(constants)) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(key)) throw new Error(`mws_env の key "${key}" は環境変数形式にしてください。`);
     vars[key] = String(value);
@@ -1038,6 +1041,154 @@ async function createMwsDeployment(env, input) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// VPS (SSH) provider — Oracle Cloud, Agames VPS, or any server reachable over SSH.
+// A Worker cannot open SSH connections, so the deploy runs on a GitHub Actions
+// runner (deploy-vps.yml). It claims the same kind of encrypted job as the
+// Cloudflare path, uploads the repository over SSH, writes .env from the form,
+// installs dependencies and (re)starts a systemd service.
+// ---------------------------------------------------------------------------
+const VPS_PRESETS = {
+  oracle: { label: "Oracle", username: "ubuntu" },
+  agames: { label: "Agames", username: "root" },
+  other: { label: "VPS", username: "root" },
+};
+
+let vpsDetailColumnReady = false;
+async function ensureVpsSchema(env) {
+  if (vpsDetailColumnReady) return;
+  try {
+    await env.DB.prepare("ALTER TABLE deployments ADD COLUMN detail TEXT").run();
+  } catch {
+    // The column already exists.
+  }
+  vpsDetailColumnReady = true;
+}
+
+function validateVpsAccountInput(body) {
+  const label = String(body.label || "").trim() || "VPS";
+  const preset = Object.prototype.hasOwnProperty.call(VPS_PRESETS, body.preset) ? body.preset : "other";
+  const host = String(body.host || "").trim();
+  if (!/^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(host)) {
+    throw new Error("ホスト（IPアドレスまたはドメイン）の形式が正しくありません。");
+  }
+  const port = Number(body.port || 22);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("ポート番号が正しくありません。");
+  const username = String(body.username || "").trim() || VPS_PRESETS[preset].username;
+  if (!/^[A-Za-z_][A-Za-z0-9_-]{0,31}$/.test(username)) throw new Error("ユーザー名の形式が正しくありません。");
+  const authType = body.auth_type === "password" ? "password" : "key";
+  const secret = String(body.secret || "").replace(/\r\n/g, "\n");
+  if (!secret.trim()) throw new Error(authType === "key" ? "SSH秘密鍵は必須です。" : "パスワードは必須です。");
+  if (secret.length > 8192) throw new Error("入力が長すぎます。");
+  if (authType === "key") {
+    if (!/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(secret) || !/-----END [A-Z ]*PRIVATE KEY-----/.test(secret)) {
+      throw new Error("SSH秘密鍵（-----BEGIN ... PRIVATE KEY----- から -----END ... までの全体）を貼り付けてください。");
+    }
+  } else if (/[\r\n]/.test(secret)) {
+    throw new Error("パスワードに改行は使えません。");
+  }
+  return { label, preset, host, port, username, authType, secret: authType === "key" ? secret.trim() + "\n" : secret };
+}
+
+async function createVpsDeployment(env, input) {
+  await ensureVpsSchema(env);
+  const repository = validateRepoName(input.repository, env);
+  const ref = String(input.ref || "main").trim();
+  const accountAlias = String(input.account_alias || "").trim();
+
+  const github = await getSetting(env, "github_pat");
+  if (!github) throw new Error("GitHub Tokenが未登録です。");
+
+  const account = await env.DB.prepare(
+    "SELECT alias, label, preset, host, port, username, auth_type, encrypted_secret, host_key FROM vps_accounts WHERE alias = ?",
+  ).bind(accountAlias).first();
+  if (!account) throw new Error("選択したVPSが登録されていません。");
+
+  const manifest = await fetchManifest(env, github.value, repository, ref);
+  if (manifest.provider !== "vps") {
+    throw new Error("このBOTはVPS向けではありません。bot-factory.json の provider を \"vps\" にしてください。");
+  }
+  const runtime = manifest.vps_runtime === "node" ? "node" : "python";
+  const entrypoint = String(manifest.entrypoint || (runtime === "node" ? "index.js" : "main.py")).trim();
+  if (!/^[A-Za-z0-9_./-]+$/.test(entrypoint) || entrypoint.includes("..") || entrypoint.startsWith("/")) {
+    throw new Error("entrypoint の形式が正しくありません。");
+  }
+  const swapMb = Math.min(4096, Math.max(0, Number(manifest.vps_swap_mb ?? 1024) || 0));
+  const pipExtra = Array.isArray(manifest.vps_pip_extra) ? manifest.vps_pip_extra.map(String) : [];
+  for (const spec of pipExtra) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.\[\],<>=!~-]{0,80}$/.test(spec)) throw new Error(`vps_pip_extra "${spec}" の形式が正しくありません。`);
+  }
+
+  const envVars = await collectMwsEnv(env, {
+    manifest,
+    repository,
+    accountAlias,
+    fields: input.fields,
+    confirmed: input.confirmed_requirements,
+  });
+
+  const botName = normalizeWorkerName(manifest.name || repository.split("/")[1]);
+  await cleanupExpiredDeployments(env);
+  const active = await env.DB.prepare(
+    `SELECT id FROM deployments
+     WHERE account_alias = ? AND worker_name = ? AND status IN ('queued', 'dispatched', 'running') LIMIT 1`,
+  ).bind(account.alias, botName).first();
+  if (active) throw new Error("このBOTは既に起動処理中です。完了してから再実行してください。");
+
+  const factoryRepo = String(env.FACTORY_GITHUB_REPO || "").trim();
+  const factoryRef = String(env.FACTORY_GITHUB_REF || "main").trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(factoryRepo)) throw new Error("FACTORY_GITHUB_REPO が未設定または不正です。");
+
+  const id = crypto.randomUUID();
+  const createdAt = nowIso();
+  const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+  const payload = {
+    id,
+    provider: "vps",
+    repository,
+    ref,
+    github_token: github.value,
+    vps: {
+      host: account.host,
+      port: Number(account.port),
+      username: account.username,
+      auth_type: account.auth_type,
+      secret: await decryptValue(env, account.encrypted_secret),
+      host_key: account.host_key || "",
+    },
+    bot: { name: botName, runtime, entrypoint, swap_mb: swapMb, pip_extra: pipExtra },
+    env: envVars,
+  };
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO deployments(id, repository, ref, worker_name, account_alias, encrypted_payload, status, created_at, expires_at)
+       VALUES(?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+    ).bind(id, repository, ref, botName, account.alias, await encryptValue(env, payload), createdAt, expiresAt),
+    env.DB.prepare("INSERT INTO deployment_secret_sets(deployment_id, secret_keys_json) VALUES(?, '[]')").bind(id),
+  ]);
+
+  let dispatch;
+  try {
+    dispatch = await githubFetch(github.value, `/repos/${factoryRepo}/actions/workflows/deploy-vps.yml/dispatches`, {
+      method: "POST",
+      body: JSON.stringify({ ref: factoryRef, inputs: { job_id: id, confirm: "DEPLOY" } }),
+    });
+  } catch (error) {
+    await env.DB.prepare("UPDATE deployments SET status = 'dispatch_failed', conclusion = ? WHERE id = ?")
+      .bind("github_network_error", id).run();
+    throw new Error(`GitHub Actionsへの接続に失敗しました: ${error?.message || error}`);
+  }
+  if (!dispatch.ok) {
+    const detail = await dispatch.text();
+    await env.DB.prepare("UPDATE deployments SET status = 'dispatch_failed', conclusion = ? WHERE id = ?")
+      .bind(`github_${dispatch.status}`, id).run();
+    throw new Error(`GitHub Actionsを起動できませんでした (${dispatch.status}): ${detail.slice(0, 200)}`);
+  }
+  await env.DB.prepare("UPDATE deployments SET status = 'dispatched' WHERE id = ? AND status = 'queued'").bind(id).run();
+  await audit(env, "vps_deployment_dispatched", { id, repository, account_alias: account.alias });
+  return { id, status: "dispatched", provider: "vps" };
+}
+
 async function isBlocked(env, ip) {
   const row = await env.DB.prepare("SELECT failures, blocked_until FROM auth_attempts WHERE ip = ?")
     .bind(ip).first();
@@ -1153,6 +1304,20 @@ async function handleInternal(request, env, url) {
 
     if (status === "completed") {
       await commitDeploymentSecretState(env, result[1]);
+    }
+
+    // VPS jobs report the deploy log tail and the SSH host key learned on first connect.
+    const detail = typeof body.detail === "string" ? body.detail.slice(-4000) : "";
+    if (detail) {
+      await ensureVpsSchema(env);
+      await env.DB.prepare("UPDATE deployments SET detail = ? WHERE id = ?").bind(detail, result[1]).run();
+    }
+    const hostKey = typeof body.host_key === "string" ? body.host_key.trim().slice(0, 1024) : "";
+    if (hostKey && /^[^\s]+ (ssh-ed25519|ecdsa-sha2-[a-z0-9]+|ssh-rsa) [A-Za-z0-9+/=]+$/.test(hostKey)) {
+      await env.DB.prepare(
+        `UPDATE vps_accounts SET host_key = ?, updated_at = ?
+         WHERE host_key IS NULL AND alias = (SELECT account_alias FROM deployments WHERE id = ?)`,
+      ).bind(hostKey, nowIso(), result[1]).run();
     }
 
     await audit(env, "deployment_result", { id: result[1], conclusion, workflow_run_id: workflowRunId });
@@ -1747,16 +1912,63 @@ async function handleApi(request, env, url) {
     return json({ ok: true });
   }
 
+  if (url.pathname === "/api/vps/accounts" && request.method === "GET") {
+    const rows = await env.DB.prepare(
+      `SELECT alias, label, preset, host, port, username, auth_type,
+              CASE WHEN host_key IS NULL THEN 0 ELSE 1 END AS host_key_pinned, created_at, updated_at
+       FROM vps_accounts ORDER BY label`,
+    ).all();
+    return json({ accounts: rows.results || [] });
+  }
+
+  if (url.pathname === "/api/vps/accounts" && request.method === "POST") {
+    try {
+      const input = validateVpsAccountInput(await request.json());
+      const existing = await env.DB.prepare("SELECT alias, host, port FROM vps_accounts WHERE LOWER(label) = LOWER(?)")
+        .bind(input.label).first();
+      const alias = existing?.alias || `vps-${crypto.randomUUID()}`;
+      // A changed host/port invalidates the pinned SSH host key.
+      const keepHostKey = existing && existing.host === input.host && Number(existing.port) === input.port;
+      const now = nowIso();
+      await env.DB.prepare(
+        `INSERT INTO vps_accounts(alias, label, preset, host, port, username, auth_type, encrypted_secret, host_key, created_at, updated_at)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+         ON CONFLICT(alias) DO UPDATE SET
+           preset = excluded.preset, host = excluded.host, port = excluded.port, username = excluded.username,
+           auth_type = excluded.auth_type, encrypted_secret = excluded.encrypted_secret,
+           host_key = ${keepHostKey ? "vps_accounts.host_key" : "NULL"}, updated_at = excluded.updated_at`,
+      ).bind(alias, input.label, input.preset, input.host, input.port, input.username, input.authType,
+        await encryptValue(env, input.secret), now, now).run();
+      await audit(env, "vps_account_saved", { alias });
+      return json({ ok: true, alias });
+    } catch (error) {
+      return json({ error: error?.message || "VPSの登録に失敗しました。" }, 400);
+    }
+  }
+
+  const vpsAccountDelete = url.pathname.match(/^\/api\/vps\/accounts\/([^/]+)$/);
+  if (vpsAccountDelete && request.method === "DELETE") {
+    const alias = decodeURIComponent(vpsAccountDelete[1]);
+    const usage = await env.DB.prepare("SELECT COUNT(*) AS count FROM deployments WHERE account_alias = ?").bind(alias).first();
+    if (Number(usage?.count || 0) > 0) {
+      return json({ error: "このVPSには起動履歴があるため削除できません。同じ表示名で再登録して更新してください。" }, 409);
+    }
+    await env.DB.prepare("DELETE FROM vps_accounts WHERE alias = ?").bind(alias).run();
+    await audit(env, "vps_account_deleted", { alias });
+    return json({ ok: true });
+  }
+
   if (url.pathname === "/api/deployments" && request.method === "GET") {
     const rows = await env.DB.prepare(
       `SELECT d.id, d.repository, d.ref, d.worker_name, d.account_alias,
-              'cloudflare' AS provider,
-              COALESCE(c.label, '削除済みCloudflare Account') AS account_label,
+              CASE WHEN v.alias IS NOT NULL THEN 'vps' ELSE 'cloudflare' END AS provider,
+              COALESCE(c.label, v.label, '削除済みAccount') AS account_label,
               CASE WHEN p.repository IS NULL THEN 0 ELSE 1 END AS can_restart,
               d.status, d.conclusion, d.workflow_run_id, d.workflow_run_url,
               d.created_at, d.completed_at
        FROM deployments d
        LEFT JOIN cloudflare_accounts c ON c.alias = d.account_alias
+       LEFT JOIN vps_accounts v ON v.alias = d.account_alias
        LEFT JOIN deployment_profiles p
          ON p.repository = d.repository AND p.account_alias = d.account_alias
        UNION ALL
@@ -1785,6 +1997,19 @@ async function handleApi(request, env, url) {
       ).bind(String(body.account_alias || "")).first();
       if (mwsAccount) {
         const deployment = await createMwsDeployment(env, {
+          repository: body.repository,
+          ref: body.ref,
+          account_alias: body.account_alias,
+          fields: body.fields,
+          confirmed_requirements: body.confirmed_requirements,
+        });
+        return json({ ok: true, deployment });
+      }
+      const vpsAccount = await env.DB.prepare(
+        "SELECT alias FROM vps_accounts WHERE alias = ?",
+      ).bind(String(body.account_alias || "")).first();
+      if (vpsAccount) {
+        const deployment = await createVpsDeployment(env, {
           repository: body.repository,
           ref: body.ref,
           account_alias: body.account_alias,
@@ -1939,6 +2164,11 @@ async function handleApi(request, env, url) {
 
   const deploymentLogsMatch = url.pathname.match(/^\/api\/deployments\/([^/]+)\/logs$/);
   if (deploymentLogsMatch && request.method === "GET") {
+    await ensureVpsSchema(env);
+    const vpsRow = await env.DB.prepare(
+      `SELECT d.detail FROM deployments d JOIN vps_accounts v ON v.alias = d.account_alias WHERE d.id = ?`,
+    ).bind(deploymentLogsMatch[1]).first();
+    if (vpsRow) return json({ logs: vpsRow.detail || "" });
     const row = await env.DB.prepare(
       `SELECT m.mws_bot_id, m.detail, a.encrypted_cookie
        FROM mws_deployments m LEFT JOIN mws_accounts a ON a.alias = m.account_alias

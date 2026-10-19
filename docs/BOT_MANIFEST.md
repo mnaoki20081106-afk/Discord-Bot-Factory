@@ -51,6 +51,39 @@ Example:
 }
 ```
 
+### VPS (SSH) provider — Oracle Cloud, Agames VPS, any SSH server
+
+Set `provider` to `vps` to deploy to a server you can reach over SSH. A Worker cannot open SSH connections, so Factory dispatches the `deploy-vps.yml` workflow: the GitHub runner claims the encrypted job, uploads the repository over SSH, writes `.env` from the setup form, installs dependencies and (re)starts a systemd service named `factory-<name>`. The deploy log (last ~4000 characters, secrets redacted) is stored with the deployment and shown on the management site (history list "ログ" button and the history panel after a launch).
+
+Fields:
+
+- `name`: bot name; the service is `factory-<name>` and the code lives in `~/factory/<name>`.
+- `provider`: must be `vps`.
+- `vps_runtime`: `python` (default) or `node`.
+- `entrypoint`: entry file (default `main.py` / `index.js`).
+- `vps_swap_mb`: swap to create once if the server has none (default 1024, 0 disables).
+- `vps_pip_extra`: extra pip specs installed after `requirements.txt` (e.g. packages some hosts block but a VPS allows).
+- `vps_env`: constant environment variables written to `.env` together with the `setup.fields` values.
+
+`setup.fields` and `setup.discord` work exactly like the Cloudflare path (required/pattern validation, Discord confirmations) and the values are written to `~/factory/<name>/.env` (mode 600). Existing files on the server that are not in the repository (for example `data/`) are left in place; `.env` is rewritten on every deploy.
+
+Servers are registered on the **VPS** tab (label, preset Oracle / Agames / other, host, port, user, and an SSH private key or password). Secrets are encrypted at rest and never shown again. The SSH host key is recorded on the first connection and enforced afterwards; re-register the server (same label) after rebuilding it. The SSH user must be root or have passwordless sudo (Oracle's `ubuntu` user does).
+
+Example:
+
+```json
+{
+  "name": "my-bot",
+  "runtime": "worker",
+  "provider": "vps",
+  "vps_runtime": "python",
+  "entrypoint": "main.py",
+  "vps_swap_mb": 1024,
+  "vps_pip_extra": ["aiohttp-socks"],
+  "vps_env": { "MALLOC_ARENA_MAX": "2" }
+}
+```
+
 ## Dynamic setup form
 
 Use `setup.fields` to declare values the operator must enter before starting the bot.

@@ -22,6 +22,20 @@ CREATE TABLE IF NOT EXISTS mws_accounts (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS vps_accounts (
+  alias TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  preset TEXT NOT NULL DEFAULT 'other',
+  host TEXT NOT NULL,
+  port INTEGER NOT NULL DEFAULT 22,
+  username TEXT NOT NULL,
+  auth_type TEXT NOT NULL,
+  encrypted_secret TEXT NOT NULL,
+  host_key TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS mws_deployments (
   id TEXT PRIMARY KEY,
   repository TEXT NOT NULL,

@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { repositories: [], accounts: [], mwsAccounts: [], manifest: null, setup: null, repository: "", ref: "main", manifestRequest: 0, restoredProfile: null };
+const state = { repositories: [], accounts: [], mwsAccounts: [], vpsAccounts: [], manifest: null, setup: null, repository: "", ref: "main", manifestRequest: 0, restoredProfile: null };
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -61,22 +61,31 @@ function renderRepos() {
   }
 }
 
+function vpsPresetLabel(preset) {
+  return { oracle: "Oracle", agames: "Agames" }[preset] || "VPS";
+}
+
 function renderAccounts() {
   const previous = $("accountSelect").value;
   clear($("accountSelect"));
   // Only offer accounts of the provider the selected bot's bot-factory.json asks for.
-  const provider = state.manifest ? (state.manifest.provider === "mws" ? "mws" : "cloudflare") : null;
-  const cloudflareAccounts = provider === "mws" ? [] : state.accounts;
-  const mwsAccounts = provider === "cloudflare" ? [] : state.mwsAccounts;
-  const hasAccounts = cloudflareAccounts.length + mwsAccounts.length > 0;
-  $("accountSelect").append(option("", provider && !hasAccounts
-    ? (provider === "mws" ? "m-wsアカウントを先に登録してください" : "Cloudflare Accountを先に登録してください")
-    : "選択してください"));
+  const provider = state.manifest
+    ? (["mws", "vps"].includes(state.manifest.provider) ? state.manifest.provider : "cloudflare")
+    : null;
+  const cloudflareAccounts = provider && provider !== "cloudflare" ? [] : state.accounts;
+  const mwsAccounts = provider && provider !== "mws" ? [] : state.mwsAccounts;
+  const vpsAccounts = provider && provider !== "vps" ? [] : state.vpsAccounts;
+  const hasAccounts = cloudflareAccounts.length + mwsAccounts.length + vpsAccounts.length > 0;
+  const missingText = { mws: "m-wsアカウントを先に登録してください", vps: "VPSを先に登録してください", cloudflare: "Cloudflare Accountを先に登録してください" };
+  $("accountSelect").append(option("", provider && !hasAccounts ? missingText[provider] : "選択してください"));
   for (const account of cloudflareAccounts) {
     $("accountSelect").append(option(account.alias, "[Cloudflare] " + account.label));
   }
   for (const account of mwsAccounts) {
     $("accountSelect").append(option(account.alias, "[m-ws] " + account.label));
+  }
+  for (const account of vpsAccounts) {
+    $("accountSelect").append(option(account.alias, "[" + vpsPresetLabel(account.preset) + "] " + account.label));
   }
   if (previous && Array.from($("accountSelect").options).some((item) => item.value === previous)) {
     $("accountSelect").value = previous;
@@ -95,6 +104,22 @@ function renderAccounts() {
     button.dataset.deleteAccount = account.alias;
     row.append(info, button);
     $("accountList").append(row);
+  }
+
+  clear($("vpsAccountList"));
+  if (!state.vpsAccounts.length) {
+    $("vpsAccountList").append(element("div", "muted", "VPSはまだ登録されていません。"));
+  }
+  for (const account of state.vpsAccounts) {
+    const row = element("div", "list-item");
+    const info = element("div");
+    info.append(element("strong", "", account.label));
+    info.append(element("small", "", vpsPresetLabel(account.preset) + " · " + account.username + "@" + account.host + ":" + account.port +
+      " · " + (account.auth_type === "key" ? "秘密鍵" : "パスワード") + (Number(account.host_key_pinned) ? " · ホスト鍵登録済み" : "")));
+    const button = element("button", "danger", "削除");
+    button.dataset.deleteVpsAccount = account.alias;
+    row.append(info, button);
+    $("vpsAccountList").append(row);
   }
 
   clear($("mwsAccountList"));
@@ -308,7 +333,8 @@ function updateLaunchState() {
 
   const selectedAlias = $("accountSelect").value;
   const account = state.accounts.find((x) => x.alias === selectedAlias) ||
-    state.mwsAccounts.find((x) => x.alias === selectedAlias);
+    state.mwsAccounts.find((x) => x.alias === selectedAlias) ||
+    state.vpsAccounts.find((x) => x.alias === selectedAlias);
   clear($("launchSummary"));
   const values = [
     ["GitHub", state.repository || "未選択"],
@@ -356,7 +382,7 @@ async function loadManifest(options = {}) {
     state.manifest = data.manifest;
     state.setup = data.setup;
     setStateText("manifestState", data.setup.title + " のセットアップ定義を読み込みました。" +
-      (data.manifest.provider === "mws" ? "（m-wsで起動します）" : ""), "good");
+      (data.manifest.provider === "mws" ? "（m-wsで起動します）" : data.manifest.provider === "vps" ? "（VPSへSSHでデプロイします）" : ""), "good");
     renderAccounts();
     $("accountStep").classList.remove("disabled-card");
     renderSetup();
@@ -384,12 +410,14 @@ async function loadRepos() {
   }
 }
 async function loadAccounts() {
-  const [cf, mws] = await Promise.all([
+  const [cf, mws, vps] = await Promise.all([
     api("/api/cloudflare/accounts"),
     api("/api/mws/accounts"),
+    api("/api/vps/accounts"),
   ]);
   state.accounts = cf.accounts || [];
   state.mwsAccounts = mws.accounts || [];
+  state.vpsAccounts = vps.accounts || [];
   renderAccounts();
   updateLaunchState();
 }
@@ -404,7 +432,19 @@ async function pollDeployment(id, attempt = 0) {
     const data = await api("/api/deployments/" + encodeURIComponent(id));
     const status = data.deployment?.status || "";
     await loadHistory();
-    if (["completed", "failed", "dispatch_failed", "expired"].includes(status)) return;
+    if (["completed", "failed", "dispatch_failed", "expired"].includes(status)) {
+      // VPS deployments keep the SSH deploy log; show it right here (404 for other providers).
+      try {
+        const logData = await api("/api/deployments/" + encodeURIComponent(id) + "/logs");
+        if (logData.logs) {
+          setStateText("historyState", (status === "completed" ? "【デプロイ完了ログ】\n" : "【デプロイ失敗ログ】\n") + logData.logs,
+            status === "completed" ? "good" : "error");
+        }
+      } catch {
+        // Not a VPS deployment.
+      }
+      return;
+    }
   } catch {
     // Keep the current history visible and retry transient failures.
   }
@@ -450,7 +490,7 @@ async function loadHistory() {
       right.append(restart);
     }
 
-    if (row.provider === "mws") {
+    if (row.provider === "mws" || row.provider === "vps") {
       const logButton = element("button", "ghost", "ログ");
       logButton.type = "button";
       logButton.dataset.mwsLogs = row.id;
@@ -767,5 +807,56 @@ $("historyList").addEventListener("click", async (event) => {
     setStateText("manifestState", error.message, "error");
   } finally {
     button.disabled = false;
+  }
+});
+
+$("vpsAccountPreset").addEventListener("change", () => {
+  const defaults = { oracle: "ubuntu", agames: "root", other: "root" };
+  $("vpsAccountUser").placeholder = defaults[$("vpsAccountPreset").value] || "root";
+});
+
+$("vpsAccountAuth").addEventListener("change", () => {
+  const isKey = $("vpsAccountAuth").value === "key";
+  $("vpsAccountSecretLabel").textContent = isKey
+    ? "SSH秘密鍵（-----BEGIN ... から -----END ... まで全部）"
+    : "パスワード";
+});
+
+$("vpsAccountForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setStateText("vpsAccountFormState", "登録しています…");
+  try {
+    await api("/api/vps/accounts", {
+      method: "POST",
+      body: JSON.stringify({
+        label: $("vpsAccountLabel").value,
+        preset: $("vpsAccountPreset").value,
+        host: $("vpsAccountHost").value,
+        port: Number($("vpsAccountPort").value || 22),
+        username: $("vpsAccountUser").value,
+        auth_type: $("vpsAccountAuth").value,
+        secret: $("vpsAccountSecret").value,
+      }),
+    });
+    $("vpsAccountSecret").value = "";
+    setStateText("vpsAccountFormState", "登録しました。", "good");
+    await loadAccounts();
+  } catch (error) {
+    setStateText("vpsAccountFormState", error.message, "error");
+  }
+});
+
+$("vpsAccountList").addEventListener("click", async (event) => {
+  const alias = event.target && event.target.dataset ? event.target.dataset.deleteVpsAccount : "";
+  if (!alias) return;
+  const account = state.vpsAccounts.find((item) => item.alias === alias);
+  if (!confirm((account?.label || "このVPS") + " を削除しますか？")) return;
+  setStateText("vpsAccountFormState", "削除しています…");
+  try {
+    await api("/api/vps/accounts/" + encodeURIComponent(alias), { method: "DELETE", body: "{}" });
+    setStateText("vpsAccountFormState", "削除しました。", "good");
+    await loadAccounts();
+  } catch (error) {
+    setStateText("vpsAccountFormState", error.message, "error");
   }
 });

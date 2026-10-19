@@ -1,0 +1,114 @@
+name: Deploy Bot to VPS
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Control Plane deployment job ID"
+        required: true
+        type: string
+      confirm:
+        description: "Type DEPLOY"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bot-factory-vps-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ inputs.confirm == 'DEPLOY' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Factory
+        uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Claim deployment job
+        id: claim
+        env:
+          FACTORY_CONTROL_PLANE_URL: ${{ vars.FACTORY_CONTROL_PLANE_URL }}
+          FACTORY_CONTROL_PLANE_KEY: ${{ secrets.FACTORY_CONTROL_PLANE_KEY }}
+        run: |
+          set -euo pipefail
+          : "${FACTORY_CONTROL_PLANE_URL:?FACTORY_CONTROL_PLANE_URL is not configured}"
+          : "${FACTORY_CONTROL_PLANE_KEY:?FACTORY_CONTROL_PLANE_KEY is not configured}"
+
+          job_file="$RUNNER_TEMP/factory-vps-job.json"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          control_plane_url="${FACTORY_CONTROL_PLANE_URL%/}"
+          curl -fsS \
+            -X POST \
+            -H "Authorization: Bearer $FACTORY_CONTROL_PLANE_KEY" \
+            -H "X-Factory-Run-ID: $GITHUB_RUN_ID" \
+            -H "X-Factory-Run-URL: $run_url" \
+            "$control_plane_url/api/internal/jobs/${{ inputs.job_id }}/claim" \
+            > "$job_file"
+
+          node scripts/vps/claim-vps-job.mjs "$job_file"
+          rm -f "$job_file"
+
+      - name: Checkout bot repository
+        env:
+          SOURCE_REPOSITORY: ${{ steps.claim.outputs.repository }}
+          SOURCE_REF: ${{ steps.claim.outputs.ref }}
+        run: |
+          set -euo pipefail
+          export GH_TOKEN="$FACTORY_GITHUB_PAT"
+          : "${GH_TOKEN:?Factory GitHub PAT was not loaded}"
+          gh repo clone "$SOURCE_REPOSITORY" source -- --branch "$SOURCE_REF" --depth 1
+
+      - name: Deploy to VPS over SSH
+        env:
+          FACTORY_ROOT: ${{ github.workspace }}
+        run: bash scripts/vps/deploy.sh "$GITHUB_WORKSPACE/source"
+
+      - name: Report result to Control Plane
+        if: ${{ always() }}
+        env:
+          FACTORY_CONTROL_PLANE_URL: ${{ vars.FACTORY_CONTROL_PLANE_URL }}
+          FACTORY_CONTROL_PLANE_KEY: ${{ secrets.FACTORY_CONTROL_PLANE_KEY }}
+          CONCLUSION: ${{ job.status }}
+        run: |
+          set +e
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          control_plane_url="${FACTORY_CONTROL_PLANE_URL%/}"
+          payload="$(node -e '
+            const fs = require("node:fs");
+            const temp = process.env.RUNNER_TEMP;
+            const read = (name) => { try { return fs.readFileSync(`${temp}/${name}`, "utf8"); } catch { return ""; } };
+            let detail = read("vps-deploy.log");
+            // Redact every configured .env value (tokens, secrets) from the log tail.
+            let envText = "";
+            try { envText = Buffer.from(process.env.BOT_ENV_B64 || "", "base64").toString("utf8"); } catch {}
+            for (const line of envText.split("\n")) {
+              const value = line.slice(line.indexOf("=") + 1).replace(/^"|"$/g, "");
+              if (value.length >= 6) detail = detail.split(value).join("***");
+            }
+            const secrets = [process.env.SSHPASS, process.env.FACTORY_GITHUB_PAT].filter((v) => v && v.length >= 6);
+            for (const value of secrets) detail = detail.split(value).join("***");
+            process.stdout.write(JSON.stringify({
+              conclusion: process.env.CONCLUSION,
+              workflow_run_id: process.env.GITHUB_RUN_ID,
+              workflow_run_url: process.argv[1],
+              detail: detail.slice(-3800),
+              host_key: read("vps-host-key").trim(),
+            }));
+          ' "$run_url")"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $FACTORY_CONTROL_PLANE_KEY" \
+            -H "Content-Type: application/json" \
+            --data "$payload" \
+            "$control_plane_url/api/internal/jobs/${{ inputs.job_id }}/result" \
+            >/dev/null
+
+      - name: Remove SSH key
+        if: ${{ always() }}
+        run: rm -f "$RUNNER_TEMP/factory_vps_key" "$RUNNER_TEMP/vps_known_hosts"

@@ -27,6 +27,7 @@
         <button data-tab="deploy" class="nav-item active">BOT起動</button>
         <button data-tab="accounts" class="nav-item">Cloudflare</button>
         <button data-tab="mws" class="nav-item">m-ws</button>
+        <button data-tab="vps" class="nav-item">VPS</button>
         <button data-tab="history" class="nav-item">履歴</button>
         <button data-tab="settings" class="nav-item">設定</button>
       </nav>
@@ -98,6 +99,49 @@
           <div id="mwsAccountFormState" class="inline-state"></div>
         </div>
         <div class="card"><h2>登録済みAccount</h2><div id="mwsAccountList" class="list"></div></div>
+      </section>
+      <section id="tab-vps" class="tab">
+        <div class="page-head"><div><span class="eyebrow">VPS</span><h1>VPS（Oracle / Agames など）</h1></div></div>
+        <div class="card">
+          <h2>SSHで接続できるサーバーを登録</h2>
+          <p class="hint">
+            Oracle Cloud・Agames VPS・その他、SSHで入れるサーバーに、BOTをsystemdで常駐させます。
+            秘密鍵／パスワードは暗号化してD1へ保存し、画面へ再表示はしません。初回の接続でサーバーのホスト鍵を記録し、
+            以後は一致しない接続を拒否します。
+          </p>
+          <form id="vpsAccountForm" class="grid two">
+            <label>表示名<input id="vpsAccountLabel" placeholder="Oracle東京" required></label>
+            <label>種類
+              <select id="vpsAccountPreset">
+                <option value="oracle">Oracle Cloud（ユーザー名: ubuntu）</option>
+                <option value="agames">Agames VPS（ユーザー名: root）</option>
+                <option value="other">その他のVPS</option>
+              </select>
+            </label>
+            <label>ホスト（IPアドレス / ドメイン）<input id="vpsAccountHost" placeholder="203.0.113.10" required autocomplete="off"></label>
+            <label>ポート<input id="vpsAccountPort" type="number" value="22" min="1" max="65535"></label>
+            <label>ユーザー名<input id="vpsAccountUser" placeholder="ubuntu" autocomplete="off"></label>
+            <label>認証方式
+              <select id="vpsAccountAuth">
+                <option value="key">SSH秘密鍵</option>
+                <option value="password">パスワード</option>
+              </select>
+            </label>
+            <label class="full"><span id="vpsAccountSecretLabel">SSH秘密鍵（-----BEGIN ... から -----END ... まで全部）</span>
+              <textarea id="vpsAccountSecret" rows="6" autocomplete="off" spellcheck="false" required style="width:100%;border:1px solid var(--line);background:#0d121a;color:var(--text);border-radius:11px;padding:12px 13px;font-family:monospace;font-size:12px"></textarea>
+            </label>
+            <div class="full"><button class="primary" type="submit">登録 / 更新</button></div>
+          </form>
+          <div id="vpsAccountFormState" class="inline-state"></div>
+          <details class="field-help"><summary>Oracle Cloud の場合のメモ</summary>
+            <ol>
+              <li>インスタンス作成時にダウンロードした秘密鍵（.key）の中身を、そのまま貼り付けます。</li>
+              <li>ユーザー名は Ubuntu イメージなら <code>ubuntu</code>。</li>
+              <li>Discord-Cheat のようにBOT側から外へ接続する構成なら、ポート開放は不要です。</li>
+            </ol>
+          </details>
+        </div>
+        <div class="card"><h2>登録済みVPS</h2><div id="vpsAccountList" class="list"></div></div>
       </section>
       <section id="tab-history" class="tab">
         <div class="page-head"><div><span class="eyebrow">HISTORY</span><h1>起動履歴</h1></div><button id="refreshHistory" class="ghost">更新</button></div>
