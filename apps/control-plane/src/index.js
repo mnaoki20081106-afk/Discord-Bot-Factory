@@ -688,7 +688,9 @@ async function mwsJson(env, cookie, path, options = {}) {
   const response = await mwsFetch(env, cookie, path, options);
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(body?.detail || `m-ws API エラー (${path} ${response.status})`);
+    const error = new Error(body?.detail || `m-ws API エラー (${path} ${response.status})`);
+    error.mwsBody = body;
+    throw error;
   }
   return body;
 }
@@ -718,6 +720,37 @@ async function mwsFetchLogs(env, cookie, botId) {
 }
 
 const MWS_BLOCKED_PATTERN = /ブロック|blocked|not allowed|禁止/i;
+
+// When m-ws refuses to start the bot, its own message only says "see the log". Pull the log
+// (and any extra fields in the error body) into the message that the Factory page shows.
+async function mwsExplainFailure(env, { cookie, botId, error, repository, ref, githubToken }) {
+  const parts = [String(error?.message || error)];
+  const extra = { ...(error?.mwsBody || {}) };
+  delete extra.detail;
+  if (Object.keys(extra).length) parts.push(JSON.stringify(extra).slice(0, 800));
+
+  const logs = await mwsFetchLogs(env, cookie, botId);
+  parts.push("【m-wsログ】\n" + (logs.trim() ? logs.slice(-2500) : "（m-wsからログを取得できませんでした）"));
+
+  if (MWS_BLOCKED_PATTERN.test(parts[0])) {
+    try {
+      const response = await githubFetch(
+        githubToken,
+        `/repos/${repository}/contents/requirements.txt?ref=${encodeURIComponent(ref || "main")}`,
+      );
+      if (response.ok) {
+        const payload = await response.json();
+        parts.push("【requirements.txt】\n" + decodeGitHubContent(payload.content).trim());
+      }
+    } catch {
+      // The log above is the primary information.
+    }
+  }
+
+  const wrapped = new Error(parts.join("\n\n"));
+  wrapped.mwsBody = error?.mwsBody;
+  return wrapped;
+}
 
 async function verifyMwsCookie(env, cookie) {
   const response = await mwsFetch(env, cookie, "/auth/me");
@@ -826,20 +859,24 @@ async function mwsDeployBot(env, { accountAlias, repository, ref, manifest, gith
   const botId = String(bot?.id ?? bot?.bot_id ?? "");
   if (!botId) throw new Error("m-ws BOTのIDを取得できませんでした。");
 
-  await mwsImportFromGithub(env, cookie, botId, { repository, ref, githubToken });
+  try {
+    await mwsImportFromGithub(env, cookie, botId, { repository, ref, githubToken });
 
-  if (manifest.entrypoint) {
-    await mwsJson(env, cookie, `/bots/${botId}/entrypoint`, {
-      method: "POST",
-      body: JSON.stringify({ entrypoint: manifest.entrypoint }),
-    });
+    if (manifest.entrypoint) {
+      await mwsJson(env, cookie, `/bots/${botId}/entrypoint`, {
+        method: "POST",
+        body: JSON.stringify({ entrypoint: manifest.entrypoint }),
+      });
+    }
+
+    if (envVars && Object.keys(envVars).length) {
+      await mwsUploadEnv(env, cookie, botId, envVars);
+    }
+
+    await mwsJson(env, cookie, `/bots/${botId}/start`, { method: "POST" });
+  } catch (error) {
+    throw await mwsExplainFailure(env, { cookie, botId, error, repository, ref, githubToken });
   }
-
-  if (envVars && Object.keys(envVars).length) {
-    await mwsUploadEnv(env, cookie, botId, envVars);
-  }
-
-  await mwsJson(env, cookie, `/bots/${botId}/start`, { method: "POST" });
 
   // Give m-ws a moment to install requirements and boot, then capture what it printed.
   await new Promise((resolve) => setTimeout(resolve, 8000));

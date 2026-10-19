@@ -31,6 +31,8 @@ function setTab(name) {
 function setStateText(id, text, kind = "") {
   const el = $(id);
   el.textContent = text;
+  el.style.whiteSpace = "pre-wrap";
+  el.style.wordBreak = "break-all";
   el.style.color = kind === "error" ? "var(--bad)" : kind === "good" ? "var(--good)" : "";
 }
 function clear(el) {
