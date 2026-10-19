@@ -740,7 +740,17 @@ async function mwsExplainFailure(env, { cookie, botId, error, repository, ref, g
       );
       if (response.ok) {
         const payload = await response.json();
-        parts.push("【requirements.txt】\n" + decodeGitHubContent(payload.content).trim());
+        const requirements = decodeGitHubContent(payload.content);
+        parts.push("【requirements.txt】\n" + requirements.trim());
+        const blockedPackages = await mwsProbeBlockedPackages(env, cookie, botId, requirements);
+        parts.push(
+          "【ブロックされたパッケージ】\n" +
+          (blockedPackages.length
+            ? blockedPackages.join("\n")
+            : "特定できませんでした（1つずつ起動しても拒否されませんでした）"),
+        );
+        // The probe overwrote requirements.txt on m-ws; put the repository's version back.
+        await mwsImportFromGithub(env, cookie, botId, { repository, ref, githubToken }).catch(() => null);
       }
     } catch {
       // The log above is the primary information.
@@ -750,6 +760,28 @@ async function mwsExplainFailure(env, { cookie, botId, error, repository, ref, g
   const wrapped = new Error(parts.join("\n\n"));
   wrapped.mwsBody = error?.mwsBody;
   return wrapped;
+}
+
+// m-ws only says "a blocked package is included" and its log stays empty because the bot never
+// ran. Find the offender by starting the bot with one requirement at a time: a blocked one is
+// refused again, an allowed one starts (and is stopped right away).
+async function mwsProbeBlockedPackages(env, cookie, botId, requirementsText) {
+  const lines = requirementsText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .slice(0, 12);
+  const blocked = [];
+  for (const line of lines) {
+    try {
+      await mwsUploadFile(env, cookie, botId, "requirements.txt", line + "\n");
+      await mwsJson(env, cookie, `/bots/${botId}/start`, { method: "POST" });
+      await mwsFetch(env, cookie, `/bots/${botId}/stop`, { method: "POST" }).catch(() => null);
+    } catch (error) {
+      if (MWS_BLOCKED_PATTERN.test(String(error?.message || ""))) blocked.push(line);
+    }
+  }
+  return blocked;
 }
 
 async function verifyMwsCookie(env, cookie) {
@@ -800,8 +832,12 @@ function mwsDotenv(vars) {
 }
 
 async function mwsUploadEnv(env, cookie, botId, vars) {
+  await mwsUploadFile(env, cookie, botId, ".env", mwsDotenv(vars));
+}
+
+async function mwsUploadFile(env, cookie, botId, filename, content) {
   const form = new FormData();
-  form.append("file", new File([mwsDotenv(vars)], ".env", { type: "text/plain" }));
+  form.append("file", new File([content], filename, { type: "text/plain" }));
   const response = await fetch(`${mwsBase(env)}/bots/${botId}/upload`, {
     method: "POST",
     headers: { cookie, accept: "application/json" },
@@ -809,7 +845,7 @@ async function mwsUploadEnv(env, cookie, botId, vars) {
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(body?.detail || `m-wsへの環境変数(.env)の保存に失敗しました (${response.status})`);
+    throw new Error(body?.detail || `m-wsへの${filename}の保存に失敗しました (${response.status})`);
   }
 }
 
