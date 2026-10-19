@@ -701,6 +701,24 @@ function normalizeMwsCookie(raw) {
   return cookie;
 }
 
+// m-ws shows the bot's console/pip output on its own site; the same text is available at
+// /bots/{id}/logs/download. Factory surfaces it so a failed start (e.g. a blocked package)
+// is visible without leaving the management site.
+async function mwsFetchLogs(env, cookie, botId) {
+  try {
+    const response = await mwsFetch(env, cookie, `/bots/${botId}/logs/download`, {
+      headers: { accept: "text/plain, */*" },
+    });
+    if (!response.ok) return "";
+    const text = (await response.text()).replace(/\u001b\[[0-9;]*m/g, "");
+    return text.length > 6000 ? "…\n" + text.slice(-6000) : text;
+  } catch {
+    return "";
+  }
+}
+
+const MWS_BLOCKED_PATTERN = /ブロック|blocked|not allowed|禁止/i;
+
 async function verifyMwsCookie(env, cookie) {
   const response = await mwsFetch(env, cookie, "/auth/me");
   if (!response.ok) {
@@ -823,7 +841,11 @@ async function mwsDeployBot(env, { accountAlias, repository, ref, manifest, gith
 
   await mwsJson(env, cookie, `/bots/${botId}/start`, { method: "POST" });
 
-  return { botId, name, accountLabel: account.label };
+  // Give m-ws a moment to install requirements and boot, then capture what it printed.
+  await new Promise((resolve) => setTimeout(resolve, 8000));
+  const logs = await mwsFetchLogs(env, cookie, botId);
+
+  return { botId, name, accountLabel: account.label, logs };
 }
 
 async function createMwsDeployment(env, input) {
@@ -863,12 +885,26 @@ async function createMwsDeployment(env, input) {
       githubToken: github.value,
       envVars,
     });
+    const blocked = MWS_BLOCKED_PATTERN.test(result.logs || "");
     await env.DB.prepare(
       `UPDATE mws_deployments
-       SET status = 'completed', conclusion = 'success', mws_bot_id = ?, completed_at = ?
+       SET status = ?, conclusion = ?, mws_bot_id = ?, detail = ?, completed_at = ?
        WHERE id = ?`,
-    ).bind(result.botId, nowIso(), id).run();
-    await audit(env, "mws_deployment_completed", { id, repository, account_alias: accountAlias });
+    ).bind(
+      blocked ? "failed" : "completed",
+      blocked ? "package_blocked" : "success",
+      result.botId,
+      (result.logs || "").slice(-4000),
+      nowIso(),
+      id,
+    ).run();
+    await audit(env, blocked ? "mws_deployment_blocked" : "mws_deployment_completed", { id, repository, account_alias: accountAlias });
+    if (blocked) {
+      throw new Error(
+        "m-wsがパッケージをブロックしました。履歴の「ログ」で該当パッケージを確認し、requirements.txtから削除してください。\n" +
+        (result.logs || "").slice(-800),
+      );
+    }
     return {
       id,
       status: "completed",
@@ -879,9 +915,12 @@ async function createMwsDeployment(env, input) {
   } catch (error) {
     await env.DB.prepare(
       `UPDATE mws_deployments
-       SET status = 'failed', conclusion = 'error', detail = ?, completed_at = ?
+       SET status = 'failed',
+           conclusion = CASE WHEN conclusion = 'package_blocked' THEN conclusion ELSE 'error' END,
+           detail = CASE WHEN conclusion = 'package_blocked' THEN detail ELSE ? END,
+           completed_at = ?
        WHERE id = ?`,
-    ).bind(String(error?.message || error).slice(0, 500), nowIso(), id).run();
+    ).bind(String(error?.message || error).slice(0, 4000), nowIso(), id).run();
     await audit(env, "mws_deployment_failed", { id, repository, account_alias: accountAlias });
     throw error;
   }
@@ -1784,6 +1823,21 @@ async function handleApi(request, env, url) {
     } catch (error) {
       return json({ error: error.message }, 400);
     }
+  }
+
+  const deploymentLogsMatch = url.pathname.match(/^\/api\/deployments\/([^/]+)\/logs$/);
+  if (deploymentLogsMatch && request.method === "GET") {
+    const row = await env.DB.prepare(
+      `SELECT m.mws_bot_id, m.detail, a.encrypted_cookie
+       FROM mws_deployments m LEFT JOIN mws_accounts a ON a.alias = m.account_alias
+       WHERE m.id = ?`,
+    ).bind(deploymentLogsMatch[1]).first();
+    if (!row) return json({ error: "ログを表示できるのはm-wsで起動したBOTのみです。" }, 404);
+    let logs = "";
+    if (row.mws_bot_id && row.encrypted_cookie) {
+      logs = await mwsFetchLogs(env, await decryptValue(env, row.encrypted_cookie), row.mws_bot_id);
+    }
+    return json({ logs: logs || row.detail || "" });
   }
 
   const deploymentMatch = url.pathname.match(/^\/api\/deployments\/([^/]+)$/);

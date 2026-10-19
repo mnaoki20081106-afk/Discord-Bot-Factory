@@ -448,6 +448,13 @@ async function loadHistory() {
       right.append(restart);
     }
 
+    if (row.provider === "mws") {
+      const logButton = element("button", "ghost", "ログ");
+      logButton.type = "button";
+      logButton.dataset.mwsLogs = row.id;
+      right.append(logButton);
+    }
+
     if (row.workflow_run_url) {
       const link = element("a", "ghost", "Actions");
       link.href = row.workflow_run_url;
@@ -738,3 +745,25 @@ $("historyList").addEventListener("click", async (event) => {
 
 $("refreshHistory").addEventListener("click", loadHistory);
 bootstrap();
+
+$("historyList").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-mws-logs]");
+  if (!button) return;
+  const item = button.closest(".list-item");
+  const existing = item.querySelector("pre.mws-logs");
+  if (existing) {
+    existing.remove();
+    return;
+  }
+  button.disabled = true;
+  try {
+    const data = await api("/api/deployments/" + encodeURIComponent(button.dataset.mwsLogs) + "/logs");
+    const pre = element("pre", "mws-logs", data.logs || "（ログはまだありません）");
+    pre.style.cssText = "grid-column:1/-1;max-height:320px;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:12px;margin:8px 0 0;padding:10px;border-radius:8px;background:rgba(0,0,0,.35)";
+    item.append(pre);
+  } catch (error) {
+    setStateText("manifestState", error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+});
