@@ -650,6 +650,170 @@ async function verifyCloudflareAccount(accountId, token) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// m-ws (cloud.m-ws.cc) provider
+//
+// m-ws has no API-token concept like Cloudflare: the management site itself is
+// the only API surface, and it authenticates with a Discord-login session
+// cookie (credentials: "include"). There is no way for Factory to mint that
+// cookie on its own, so the operator pastes the raw `Cookie:` request header
+// value captured from a logged-in browser tab (DevTools > Network > any
+// XHR to cloud.m-ws.cc > Request Headers > Cookie). We store it encrypted and
+// forward it byte-for-byte; we never parse individual cookie names so this
+// keeps working if m-ws renames its session cookie.
+//
+// Base URL is a best-effort guess from the site's own bundled JS (same-origin
+// fetches of the form `${o}/bots/...`); override with MWS_API_BASE if it's
+// wrong for your account.
+const MWS_API_BASE_DEFAULT = "https://cloud.m-ws.cc/api";
+
+function mwsBase(env) {
+  return String(env.MWS_API_BASE || MWS_API_BASE_DEFAULT).replace(/\/$/, "");
+}
+
+async function mwsFetch(env, cookie, path, options = {}) {
+  const response = await fetch(`${mwsBase(env)}${path}`, {
+    ...options,
+    headers: {
+      cookie,
+      accept: "application/json",
+      ...(options.body ? { "content-type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  return response;
+}
+
+async function mwsJson(env, cookie, path, options = {}) {
+  const response = await mwsFetch(env, cookie, path, options);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body?.detail || `m-ws API エラー (${path} ${response.status})`);
+  }
+  return body;
+}
+
+async function verifyMwsCookie(env, cookie) {
+  const response = await mwsFetch(env, cookie, "/auth/me");
+  if (!response.ok) {
+    throw new Error(
+      `m-wsセッションを確認できませんでした (${response.status})。ブラウザで再ログインし、Cookieを取得し直してください。`,
+    );
+  }
+  return response.json().catch(() => ({}));
+}
+
+async function mwsFindOrCreateBot(env, cookie, { name, language, region_id, template_id }) {
+  const list = await mwsJson(env, cookie, "/bots");
+  const bots = Array.isArray(list) ? list : (list.bots || []);
+  const existing = bots.find((bot) => String(bot?.name || "") === name);
+  if (existing) return existing;
+
+  return mwsJson(env, cookie, "/bots", {
+    method: "POST",
+    body: JSON.stringify({ name, language, region_id, template_id }),
+  });
+}
+
+// NOTE: the exact body `github/import` expects was not observed directly
+// (login-gated). If this throws, capture one real "GitHubからインポート"
+// click in DevTools Network and adjust the body below to match.
+async function mwsImportFromGithub(env, cookie, botId, { repository, ref, githubToken }) {
+  return mwsJson(env, cookie, `/bots/${botId}/github/import`, {
+    method: "POST",
+    body: JSON.stringify({
+      repo: repository,
+      branch: ref,
+      token: githubToken,
+    }),
+  });
+}
+
+async function mwsDeployBot(env, { accountAlias, repository, ref, manifest, githubToken }) {
+  const account = await env.DB.prepare(
+    "SELECT alias, label, encrypted_cookie FROM mws_accounts WHERE alias = ?",
+  ).bind(accountAlias).first();
+  if (!account) throw new Error("選択したm-wsアカウントが登録されていません。");
+
+  const cookie = await decryptValue(env, account.encrypted_cookie);
+  await verifyMwsCookie(env, cookie);
+
+  const name = normalizeWorkerName(manifest.name || repository.split("/")[1]);
+  const bot = await mwsFindOrCreateBot(env, cookie, {
+    name,
+    language: manifest.mws_language || manifest.language || "node",
+    region_id: manifest.mws_region_id,
+    template_id: manifest.mws_template_id,
+  });
+  const botId = String(bot?.id ?? bot?.bot_id ?? "");
+  if (!botId) throw new Error("m-ws BOTのIDを取得できませんでした。");
+
+  await mwsImportFromGithub(env, cookie, botId, { repository, ref, githubToken });
+
+  if (manifest.entrypoint) {
+    await mwsJson(env, cookie, `/bots/${botId}/entrypoint`, {
+      method: "POST",
+      body: JSON.stringify({ entrypoint: manifest.entrypoint }),
+    });
+  }
+
+  await mwsJson(env, cookie, `/bots/${botId}/start`, { method: "POST" });
+
+  return { botId, name, accountLabel: account.label };
+}
+
+async function createMwsDeployment(env, input) {
+  const repository = validateRepoName(input.repository, env);
+  const ref = String(input.ref || "main").trim();
+  const accountAlias = String(input.account_alias || "").trim();
+
+  const github = await getSetting(env, "github_pat");
+  if (!github) throw new Error("GitHub Tokenが未登録です。");
+
+  const manifest = await fetchManifest(env, github.value, repository, ref);
+  if (manifest.provider !== "mws") throw new Error("このBOTはm-ws向けではありません。");
+
+  const id = crypto.randomUUID();
+  const createdAt = nowIso();
+  const botName = normalizeWorkerName(manifest.name || repository.split("/")[1]);
+
+  await env.DB.prepare(
+    `INSERT INTO mws_deployments(id, repository, ref, bot_name, account_alias, status, created_at)
+     VALUES(?, ?, ?, ?, ?, 'running', ?)`,
+  ).bind(id, repository, ref, botName, accountAlias, createdAt).run();
+
+  try {
+    const result = await mwsDeployBot(env, {
+      accountAlias,
+      repository,
+      ref,
+      manifest,
+      githubToken: github.value,
+    });
+    await env.DB.prepare(
+      `UPDATE mws_deployments
+       SET status = 'completed', conclusion = 'success', mws_bot_id = ?, completed_at = ?
+       WHERE id = ?`,
+    ).bind(result.botId, nowIso(), id).run();
+    await audit(env, "mws_deployment_completed", { id, repository, account_alias: accountAlias });
+    return {
+      id,
+      status: "completed",
+      conclusion: "success",
+      provider: "mws",
+      workflow_run_url: `https://cloud.m-ws.cc/bots/${result.botId}`,
+    };
+  } catch (error) {
+    await env.DB.prepare(
+      `UPDATE mws_deployments
+       SET status = 'failed', conclusion = 'error', detail = ?, completed_at = ?
+       WHERE id = ?`,
+    ).bind(String(error?.message || error).slice(0, 500), nowIso(), id).run();
+    await audit(env, "mws_deployment_failed", { id, repository, account_alias: accountAlias });
+    throw error;
+  }
+}
+
 async function isBlocked(env, ip) {
   const row = await env.DB.prepare("SELECT failures, blocked_until FROM auth_attempts WHERE ip = ?")
     .bind(ip).first();
@@ -1303,9 +1467,64 @@ async function handleApi(request, env, url) {
     return json({ ok: true });
   }
 
+  if (url.pathname === "/api/mws/accounts" && request.method === "GET") {
+    const rows = await env.DB.prepare(
+      "SELECT alias, label, created_at, updated_at FROM mws_accounts ORDER BY label",
+    ).all();
+    return json({ accounts: rows.results || [] });
+  }
+
+  if (url.pathname === "/api/mws/accounts" && request.method === "POST") {
+    try {
+      const body = await request.json();
+      const cookie = String(body.cookie || "").trim();
+      if (!cookie) throw new Error("m-wsのCookieは必須です。");
+      if (cookie.length > 8192) throw new Error("Cookie値が長すぎます。");
+
+      const label = String(body.label || "").trim() || "m-ws アカウント";
+      await verifyMwsCookie(env, cookie);
+
+      const existing = await env.DB.prepare(
+        "SELECT alias FROM mws_accounts WHERE LOWER(label) = LOWER(?)",
+      ).bind(label).first();
+      const alias = existing?.alias || `mws-${crypto.randomUUID()}`;
+
+      const encryptedCookie = await encryptValue(env, cookie);
+      const now = nowIso();
+      await env.DB.prepare(
+        `INSERT INTO mws_accounts(alias, label, encrypted_cookie, created_at, updated_at)
+         VALUES(?, ?, ?, ?, ?)
+         ON CONFLICT(alias) DO UPDATE SET
+           encrypted_cookie = excluded.encrypted_cookie,
+           updated_at = excluded.updated_at`,
+      ).bind(alias, label, encryptedCookie, now, now).run();
+      await audit(env, "mws_account_saved", { alias });
+      return json({ ok: true });
+    } catch (error) {
+      return json({ error: error.message }, 400);
+    }
+  }
+
+  const mwsAccountDelete = url.pathname.match(/^\/api\/mws\/accounts\/([^/]+)$/);
+  if (mwsAccountDelete && request.method === "DELETE") {
+    const alias = decodeURIComponent(mwsAccountDelete[1]);
+    const usage = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM mws_deployments WHERE account_alias = ?",
+    ).bind(alias).first();
+    if (Number(usage?.count || 0) > 0) {
+      return json({
+        error: "このm-wsアカウントにはBOT起動履歴があるため削除できません。同じ表示名でCookieを再登録して更新してください。",
+      }, 409);
+    }
+    await env.DB.prepare("DELETE FROM mws_accounts WHERE alias = ?").bind(alias).run();
+    await audit(env, "mws_account_deleted", { alias });
+    return json({ ok: true });
+  }
+
   if (url.pathname === "/api/deployments" && request.method === "GET") {
     const rows = await env.DB.prepare(
       `SELECT d.id, d.repository, d.ref, d.worker_name, d.account_alias,
+              'cloudflare' AS provider,
               COALESCE(c.label, '削除済みCloudflare Account') AS account_label,
               CASE WHEN p.repository IS NULL THEN 0 ELSE 1 END AS can_restart,
               d.status, d.conclusion, d.workflow_run_id, d.workflow_run_url,
@@ -1314,7 +1533,19 @@ async function handleApi(request, env, url) {
        LEFT JOIN cloudflare_accounts c ON c.alias = d.account_alias
        LEFT JOIN deployment_profiles p
          ON p.repository = d.repository AND p.account_alias = d.account_alias
-       ORDER BY d.created_at DESC
+       UNION ALL
+       SELECT m.id, m.repository, m.ref, m.bot_name AS worker_name, m.account_alias,
+              'mws' AS provider,
+              COALESCE(a.label, '削除済みm-wsアカウント') AS account_label,
+              CASE WHEN p.repository IS NULL THEN 0 ELSE 1 END AS can_restart,
+              m.status, m.conclusion, NULL AS workflow_run_id,
+              CASE WHEN m.mws_bot_id IS NOT NULL THEN 'https://cloud.m-ws.cc/bots/' || m.mws_bot_id ELSE NULL END AS workflow_run_url,
+              m.created_at, m.completed_at
+       FROM mws_deployments m
+       LEFT JOIN mws_accounts a ON a.alias = m.account_alias
+       LEFT JOIN deployment_profiles p
+         ON p.repository = m.repository AND p.account_alias = m.account_alias
+       ORDER BY created_at DESC
        LIMIT 50`,
     ).all();
     return json({ deployments: rows.results || [] });
@@ -1323,6 +1554,17 @@ async function handleApi(request, env, url) {
   if (url.pathname === "/api/deployments" && request.method === "POST") {
     try {
       const body = await request.json();
+      const mwsAccount = await env.DB.prepare(
+        "SELECT alias FROM mws_accounts WHERE alias = ?",
+      ).bind(String(body.account_alias || "")).first();
+      if (mwsAccount) {
+        const deployment = await createMwsDeployment(env, {
+          repository: body.repository,
+          ref: body.ref,
+          account_alias: body.account_alias,
+        });
+        return json({ ok: true, deployment });
+      }
       let fields = body.fields && typeof body.fields === "object" ? body.fields : {};
       let restartOf = null;
 
@@ -1378,7 +1620,27 @@ async function handleApi(request, env, url) {
          FROM deployments
          WHERE id = ?`,
       ).bind(discordInviteMatch[1]).first();
-      if (!deployment) return json({ error: "起動履歴が見つかりません。" }, 404);
+
+      if (!deployment) {
+        // m-ws hosts the bot directly and doesn't go through our GitHub-invite
+        // flow (no Application ID is collected for it) — send the operator to
+        // the bot's own m-ws dashboard page instead.
+        const mwsDeployment = await env.DB.prepare(
+          "SELECT mws_bot_id, status FROM mws_deployments WHERE id = ?",
+        ).bind(discordInviteMatch[1]).first();
+        if (!mwsDeployment) return json({ error: "起動履歴が見つかりません。" }, 404);
+        if (mwsDeployment.status !== "completed" || !mwsDeployment.mws_bot_id) {
+          return json({ error: "デプロイ成功後に実行してください。" }, 409);
+        }
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: `https://cloud.m-ws.cc/bots/${mwsDeployment.mws_bot_id}`,
+            "cache-control": "no-store",
+            "referrer-policy": "no-referrer",
+          },
+        });
+      }
       if (deployment.status !== "completed") {
         return json({ error: "Discordへの追加はデプロイ成功後に実行してください。" }, 409);
       }
@@ -1454,7 +1716,17 @@ async function handleApi(request, env, url) {
               workflow_run_id, workflow_run_url, created_at, completed_at
        FROM deployments WHERE id = ?`,
     ).bind(deploymentMatch[1]).first();
-    if (!row) return json({ error: "not found" }, 404);
+    if (!row) {
+      const mwsRow = await env.DB.prepare(
+        `SELECT id, repository, ref, bot_name AS worker_name, account_alias, status, conclusion,
+                NULL AS workflow_run_id,
+                CASE WHEN mws_bot_id IS NOT NULL THEN 'https://cloud.m-ws.cc/bots/' || mws_bot_id ELSE NULL END AS workflow_run_url,
+                created_at, completed_at
+         FROM mws_deployments WHERE id = ?`,
+      ).bind(deploymentMatch[1]).first();
+      if (!mwsRow) return json({ error: "not found" }, 404);
+      return json({ deployment: mwsRow });
+    }
 
     if (row.workflow_run_id && !["completed", "failed"].includes(row.status)) {
       const github = await getSetting(env, "github_pat");

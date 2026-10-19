@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { repositories: [], accounts: [], manifest: null, setup: null, repository: "", ref: "main", manifestRequest: 0, restoredProfile: null };
+const state = { repositories: [], accounts: [], mwsAccounts: [], manifest: null, setup: null, repository: "", ref: "main", manifestRequest: 0, restoredProfile: null };
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -60,16 +60,22 @@ function renderRepos() {
 }
 
 function renderAccounts() {
+  const previous = $("accountSelect").value;
   clear($("accountSelect"));
   $("accountSelect").append(option("", "選択してください"));
   for (const account of state.accounts) {
-    $("accountSelect").append(option(account.alias, account.label));
+    $("accountSelect").append(option(account.alias, "[Cloudflare] " + account.label));
+  }
+  for (const account of state.mwsAccounts) {
+    $("accountSelect").append(option(account.alias, "[m-ws] " + account.label));
+  }
+  if (previous && Array.from($("accountSelect").options).some((item) => item.value === previous)) {
+    $("accountSelect").value = previous;
   }
 
   clear($("accountList"));
   if (!state.accounts.length) {
     $("accountList").append(element("div", "muted", "Cloudflare Accountはまだ登録されていません。"));
-    return;
   }
   for (const account of state.accounts) {
     const row = element("div", "list-item");
@@ -80,6 +86,20 @@ function renderAccounts() {
     button.dataset.deleteAccount = account.alias;
     row.append(info, button);
     $("accountList").append(row);
+  }
+
+  clear($("mwsAccountList"));
+  if (!state.mwsAccounts.length) {
+    $("mwsAccountList").append(element("div", "muted", "m-wsアカウントはまだ登録されていません。"));
+  }
+  for (const account of state.mwsAccounts) {
+    const row = element("div", "list-item");
+    const info = element("div");
+    info.append(element("strong", "", account.label));
+    const button = element("button", "danger", "削除");
+    button.dataset.deleteMwsAccount = account.alias;
+    row.append(info, button);
+    $("mwsAccountList").append(row);
   }
 }
 
@@ -277,13 +297,15 @@ function updateLaunchState() {
   $("launchButton").disabled = !canLaunch();
   $("launchButton").textContent = state.restoredProfile ? "設定を更新して再起動" : "BOTを起動";
 
-  const account = state.accounts.find((x) => x.alias === $("accountSelect").value);
+  const selectedAlias = $("accountSelect").value;
+  const account = state.accounts.find((x) => x.alias === selectedAlias) ||
+    state.mwsAccounts.find((x) => x.alias === selectedAlias);
   clear($("launchSummary"));
   const values = [
     ["GitHub", state.repository || "未選択"],
     ["Branch", state.ref || "main"],
-    ["Cloudflare", account ? account.label : "未選択"],
-    ["Worker", state.manifest ? state.manifest.name : "未読込"],
+    ["Account", account ? account.label : "未選択"],
+    ["Worker / BOT名", state.manifest ? state.manifest.name : "未読込"],
   ];
   for (const pair of values) {
     const row = element("div", "summary-row");
@@ -351,8 +373,12 @@ async function loadRepos() {
   }
 }
 async function loadAccounts() {
-  const data = await api("/api/cloudflare/accounts");
-  state.accounts = data.accounts || [];
+  const [cf, mws] = await Promise.all([
+    api("/api/cloudflare/accounts"),
+    api("/api/mws/accounts"),
+  ]);
+  state.accounts = cf.accounts || [];
+  state.mwsAccounts = mws.accounts || [];
   renderAccounts();
   updateLaunchState();
 }
@@ -506,6 +532,41 @@ $("accountForm").addEventListener("submit", async (event) => {
     await loadAccounts();
   } catch (error) {
     setStateText("accountFormState", error.message, "error");
+  }
+});
+
+$("mwsAccountForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setStateText("mwsAccountFormState", "m-wsセッションを確認しています…");
+  try {
+    await api("/api/mws/accounts", {
+      method: "POST",
+      body: JSON.stringify({
+        label: $("mwsAccountLabel").value,
+        cookie: $("mwsAccountCookie").value,
+      }),
+    });
+    $("mwsAccountCookie").value = "";
+    setStateText("mwsAccountFormState", "登録しました。", "good");
+    await loadAccounts();
+  } catch (error) {
+    setStateText("mwsAccountFormState", error.message, "error");
+  }
+});
+
+$("mwsAccountList").addEventListener("click", async (event) => {
+  const alias = event.target && event.target.dataset ? event.target.dataset.deleteMwsAccount : "";
+  if (!alias) return;
+  const account = state.mwsAccounts.find((item) => item.alias === alias);
+  if (!confirm((account?.label || "このm-wsアカウント") + " を削除しますか？")) return;
+
+  setStateText("mwsAccountFormState", "削除しています…");
+  try {
+    await api("/api/mws/accounts/" + encodeURIComponent(alias), { method: "DELETE", body: "{}" });
+    setStateText("mwsAccountFormState", "削除しました。", "good");
+    await loadAccounts();
+  } catch (error) {
+    setStateText("mwsAccountFormState", error.message, "error");
   }
 });
 

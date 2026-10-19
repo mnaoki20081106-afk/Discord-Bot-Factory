@@ -20,6 +20,7 @@
   "vars": {
     "FACTORY_GITHUB_REPO": "mnaoki20081106-afk/Discord-Bot-Factory",
     "FACTORY_GITHUB_REF": "main",
-    "ALLOWED_REPO_OWNER": "mnaoki20081106-afk"
+    "ALLOWED_REPO_OWNER": "mnaoki20081106-afk",
+    "MWS_API_BASE": "https://cloud.m-ws.cc/api"
   }
 }

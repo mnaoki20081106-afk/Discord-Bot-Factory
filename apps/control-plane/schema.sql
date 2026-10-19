@@ -14,6 +14,31 @@ CREATE TABLE IF NOT EXISTS cloudflare_accounts (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS mws_accounts (
+  alias TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  encrypted_cookie TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mws_deployments (
+  id TEXT PRIMARY KEY,
+  repository TEXT NOT NULL,
+  ref TEXT NOT NULL,
+  bot_name TEXT NOT NULL,
+  mws_bot_id TEXT,
+  account_alias TEXT NOT NULL,
+  status TEXT NOT NULL,
+  conclusion TEXT,
+  detail TEXT,
+  created_at TEXT NOT NULL,
+  completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS mws_deployments_created_at_idx
+  ON mws_deployments(created_at DESC);
+
 CREATE TABLE IF NOT EXISTS managed_values (
   repository TEXT NOT NULL,
   account_alias TEXT NOT NULL,

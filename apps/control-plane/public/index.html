@@ -26,6 +26,7 @@
       <nav>
         <button data-tab="deploy" class="nav-item active">BOT起動</button>
         <button data-tab="accounts" class="nav-item">Cloudflare</button>
+        <button data-tab="mws" class="nav-item">m-ws</button>
         <button data-tab="history" class="nav-item">履歴</button>
         <button data-tab="settings" class="nav-item">設定</button>
       </nav>
@@ -49,9 +50,9 @@
           <div id="manifestState" class="inline-state muted">リポジトリを選択するとBOTのセットアップ情報を読み込みます。</div>
         </div>
         <div id="accountStep" class="card disabled-card">
-          <div class="card-title"><span>2</span><div><h2>Cloudflareアカウント</h2><p>このDiscordサーバー用のAccountを選択します。</p></div></div>
-          <label>Cloudflare Account<select id="accountSelect"><option value="">選択してください</option></select></label>
-          <p class="hint">登録済みAccountが無い場合は「Cloudflare」タブから追加できます。</p>
+          <div class="card-title"><span>2</span><div><h2>ホスティング先アカウント</h2><p>bot-factory.jsonのproviderに応じたAccountを選択します。</p></div></div>
+          <label>Account<select id="accountSelect"><option value="">選択してください</option></select></label>
+          <p class="hint">登録済みAccountが無い場合は「Cloudflare」または「m-ws」タブから追加できます。</p>
         </div>
         <div id="discordStep" class="card disabled-card">
           <div class="card-title"><span>3</span><div><h2 id="setupTitle">Discord設定</h2><p id="setupDescription">このBOTが必要とする情報だけ表示されます。</p></div></div>
@@ -79,6 +80,24 @@
           <div id="accountFormState" class="inline-state"></div>
         </div>
         <div class="card"><h2>登録済みAccount</h2><div id="accountList" class="list"></div></div>
+      </section>
+      <section id="tab-mws" class="tab">
+        <div class="page-head"><div><span class="eyebrow">M-WS</span><h1>m-wsアカウント</h1></div></div>
+        <div class="card">
+          <h2>セッションCookieを登録</h2>
+          <p class="hint">
+            m-wsにはAPIトークンがありません。ブラウザで <code>https://cloud.m-ws.cc</code> にDiscordログインした状態でDevTools &gt;
+            Network を開き、任意のXHRリクエスト（例: <code>auth/me</code>）の Request Headers にある
+            <code>Cookie</code> の値をそのまま貼り付けてください。暗号化してD1へ保存し、画面へ再表示はしません。
+          </p>
+          <form id="mwsAccountForm" class="grid two">
+            <label>表示名<input id="mwsAccountLabel" placeholder="メインアカウント"></label>
+            <label class="full">Cookie<input id="mwsAccountCookie" type="password" autocomplete="off" required placeholder="例: __Secure-session=...; _ga=..."></label>
+            <div class="full"><button class="primary" type="submit">登録 / 更新</button></div>
+          </form>
+          <div id="mwsAccountFormState" class="inline-state"></div>
+        </div>
+        <div class="card"><h2>登録済みAccount</h2><div id="mwsAccountList" class="list"></div></div>
       </section>
       <section id="tab-history" class="tab">
         <div class="page-head"><div><span class="eyebrow">HISTORY</span><h1>起動履歴</h1></div><button id="refreshHistory" class="ghost">更新</button></div>

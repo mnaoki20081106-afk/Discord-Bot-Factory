@@ -24,6 +24,32 @@ Recommended fields:
 
 Do not put a hard-coded `account_id` in Wrangler config for Factory-managed bots. The account selected in the site is exported to Wrangler as `CLOUDFLARE_ACCOUNT_ID`.
 
+### m-ws (cloud.m-ws.cc) provider
+
+Set `provider` to `mws` to host the bot on [m-ws](https://cloud.m-ws.cc) instead of Cloudflare Workers. m-ws has no deploy pipeline on our side — Factory calls m-ws's own site API directly (find-or-create the bot, import it from the GitHub repository, set the entrypoint, start it). There is no GitHub Actions dispatch and no Worker secrets step for this provider.
+
+Fields:
+
+- `name`: m-ws bot name.
+- `provider`: must be `mws`.
+- `mws_language`: one of m-ws's supported runtimes (`python`, `node`, `typescript`, `go`). Defaults to `node`.
+- `mws_region_id` / `mws_template_id`: optional, only used the first time the bot is created on m-ws.
+- `entrypoint`: optional entry file, passed to m-ws's entrypoint setting.
+
+The operator registers an m-ws account from the **m-ws** tab in the management site by pasting the raw `Cookie` request header captured from a logged-in browser session (m-ws authenticates with a Discord-login session cookie, not an API token, so there is nothing else to register). `setup.fields` / `setup.discord` are not pushed to m-ws (it has its own environment-variable and Discord-requirements UI on its site) — keep them empty or informational for `mws`-provider manifests.
+
+Example:
+
+```json
+{
+  "name": "my-mws-bot",
+  "runtime": "worker",
+  "provider": "mws",
+  "mws_language": "node",
+  "entrypoint": "index.js"
+}
+```
+
 ## Dynamic setup form
 
 Use `setup.fields` to declare values the operator must enter before starting the bot.
