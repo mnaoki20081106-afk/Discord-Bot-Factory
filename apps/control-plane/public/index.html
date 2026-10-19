@@ -101,11 +101,11 @@
         <div class="card"><h2>登録済みAccount</h2><div id="mwsAccountList" class="list"></div></div>
       </section>
       <section id="tab-vps" class="tab">
-        <div class="page-head"><div><span class="eyebrow">VPS</span><h1>VPS（Oracle / Agames など）</h1></div></div>
+        <div class="page-head"><div><span class="eyebrow">VPS</span><h1>VPS（Oracle など）</h1></div></div>
         <div class="card">
           <h2>SSHで接続できるサーバーを登録</h2>
           <p class="hint">
-            Oracle Cloud・Agames VPS・その他、SSHで入れるサーバーに、BOTをsystemdで常駐させます。
+            Oracle Cloud・その他、SSHで入れるサーバーに、BOTをsystemdで常駐させます。
             秘密鍵／パスワードは暗号化してD1へ保存し、画面へ再表示はしません。初回の接続でサーバーのホスト鍵を記録し、
             以後は一致しない接続を拒否します。
           </p>
@@ -114,7 +114,6 @@
             <label>種類
               <select id="vpsAccountPreset">
                 <option value="oracle">Oracle Cloud（ユーザー名: ubuntu）</option>
-                <option value="agames">Agames VPS（ユーザー名: root）</option>
                 <option value="other">その他のVPS</option>
               </select>
             </label>

@@ -51,7 +51,7 @@ Example:
 }
 ```
 
-### VPS (SSH) provider — Oracle Cloud, Agames VPS, any SSH server
+### VPS (SSH) provider — Oracle Cloud, any SSH server
 
 Set `provider` to `vps` to deploy to a server you can reach over SSH. A Worker cannot open SSH connections, so Factory dispatches the `deploy-vps.yml` workflow: the GitHub runner claims the encrypted job, uploads the repository over SSH, writes `.env` from the setup form, installs dependencies and (re)starts a systemd service named `factory-<name>`. The deploy log (last ~4000 characters, secrets redacted) is stored with the deployment and shown on the management site (history list "ログ" button and the history panel after a launch).
 
@@ -67,7 +67,7 @@ Fields:
 
 `setup.fields` and `setup.discord` work exactly like the Cloudflare path (required/pattern validation, Discord confirmations) and the values are written to `~/factory/<name>/.env` (mode 600). Existing files on the server that are not in the repository (for example `data/`) are left in place; `.env` is rewritten on every deploy.
 
-Servers are registered on the **VPS** tab (label, preset Oracle / Agames / other, host, port, user, and an SSH private key or password). Secrets are encrypted at rest and never shown again. The SSH host key is recorded on the first connection and enforced afterwards; re-register the server (same label) after rebuilding it. The SSH user must be root or have passwordless sudo (Oracle's `ubuntu` user does).
+Servers are registered on the **VPS** tab (label, preset Oracle / other, host, port, user, and an SSH private key or password). Secrets are encrypted at rest and never shown again. The SSH host key is recorded on the first connection and enforced afterwards; re-register the server (same label) after rebuilding it. The SSH user must be root or have passwordless sudo (Oracle's `ubuntu` user does).
 
 Example:
 

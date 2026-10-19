@@ -1042,7 +1042,7 @@ async function createMwsDeployment(env, input) {
 }
 
 // ---------------------------------------------------------------------------
-// VPS (SSH) provider — Oracle Cloud, Agames VPS, or any server reachable over SSH.
+// VPS (SSH) provider — Oracle Cloud, or any server reachable over SSH.
 // A Worker cannot open SSH connections, so the deploy runs on a GitHub Actions
 // runner (deploy-vps.yml). It claims the same kind of encrypted job as the
 // Cloudflare path, uploads the repository over SSH, writes .env from the form,
@@ -1050,7 +1050,6 @@ async function createMwsDeployment(env, input) {
 // ---------------------------------------------------------------------------
 const VPS_PRESETS = {
   oracle: { label: "Oracle", username: "ubuntu" },
-  agames: { label: "Agames", username: "root" },
   other: { label: "VPS", username: "root" },
 };
 

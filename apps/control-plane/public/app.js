@@ -62,7 +62,7 @@ function renderRepos() {
 }
 
 function vpsPresetLabel(preset) {
-  return { oracle: "Oracle", agames: "Agames" }[preset] || "VPS";
+  return { oracle: "Oracle" }[preset] || "VPS";
 }
 
 function renderAccounts() {
@@ -811,7 +811,7 @@ $("historyList").addEventListener("click", async (event) => {
 });
 
 $("vpsAccountPreset").addEventListener("change", () => {
-  const defaults = { oracle: "ubuntu", agames: "root", other: "root" };
+  const defaults = { oracle: "ubuntu", other: "root" };
   $("vpsAccountUser").placeholder = defaults[$("vpsAccountPreset").value] || "root";
 });
 
