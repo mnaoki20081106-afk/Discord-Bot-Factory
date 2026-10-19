@@ -62,11 +62,18 @@ function renderRepos() {
 function renderAccounts() {
   const previous = $("accountSelect").value;
   clear($("accountSelect"));
-  $("accountSelect").append(option("", "選択してください"));
-  for (const account of state.accounts) {
+  // Only offer accounts of the provider the selected bot's bot-factory.json asks for.
+  const provider = state.manifest ? (state.manifest.provider === "mws" ? "mws" : "cloudflare") : null;
+  const cloudflareAccounts = provider === "mws" ? [] : state.accounts;
+  const mwsAccounts = provider === "cloudflare" ? [] : state.mwsAccounts;
+  const hasAccounts = cloudflareAccounts.length + mwsAccounts.length > 0;
+  $("accountSelect").append(option("", provider && !hasAccounts
+    ? (provider === "mws" ? "m-wsアカウントを先に登録してください" : "Cloudflare Accountを先に登録してください")
+    : "選択してください"));
+  for (const account of cloudflareAccounts) {
     $("accountSelect").append(option(account.alias, "[Cloudflare] " + account.label));
   }
-  for (const account of state.mwsAccounts) {
+  for (const account of mwsAccounts) {
     $("accountSelect").append(option(account.alias, "[m-ws] " + account.label));
   }
   if (previous && Array.from($("accountSelect").options).some((item) => item.value === previous)) {
@@ -346,7 +353,9 @@ async function loadManifest(options = {}) {
     if (requestId !== state.manifestRequest) return;
     state.manifest = data.manifest;
     state.setup = data.setup;
-    setStateText("manifestState", data.setup.title + " のセットアップ定義を読み込みました。", "good");
+    setStateText("manifestState", data.setup.title + " のセットアップ定義を読み込みました。" +
+      (data.manifest.provider === "mws" ? "（m-wsで起動します）" : ""), "good");
+    renderAccounts();
     $("accountStep").classList.remove("disabled-card");
     renderSetup();
   } catch (error) {

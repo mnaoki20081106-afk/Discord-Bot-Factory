@@ -1144,7 +1144,9 @@ async function createDeployment(env, input) {
 
   const manifest = await fetchManifest(env, github.value, repository, ref);
   if (manifest.provider && manifest.provider !== "cloudflare") {
-    throw new Error("このBOTはCloudflare向けではありません。");
+    throw new Error(manifest.provider === "mws"
+      ? "このBOTはm-ws向けです。Accountに[m-ws]のアカウントを選んでください（未登録なら「m-ws」タブで登録）。"
+      : "このBOTはCloudflare向けではありません。");
   }
   if (manifest.runtime && manifest.runtime !== "worker") {
     throw new Error("このBOTはWorker runtimeではありません。");
