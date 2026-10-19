@@ -693,6 +693,14 @@ async function mwsJson(env, cookie, path, options = {}) {
   return body;
 }
 
+// m-ws's session is the single `__Host-mrtcloud_token` cookie. Accept the full
+// "Cookie: name=value" header, "name=value", or just the bare token value.
+function normalizeMwsCookie(raw) {
+  let cookie = String(raw || "").trim().replace(/^cookie:\s*/i, "").replace(/[;\s]+$/, "");
+  if (cookie && !cookie.includes("=")) cookie = `__Host-mrtcloud_token=${cookie}`;
+  return cookie;
+}
+
 async function verifyMwsCookie(env, cookie) {
   const response = await mwsFetch(env, cookie, "/auth/me");
   if (!response.ok) {
@@ -1544,7 +1552,7 @@ async function handleApi(request, env, url) {
   if (url.pathname === "/api/mws/accounts" && request.method === "POST") {
     try {
       const body = await request.json();
-      const cookie = String(body.cookie || "").trim();
+      const cookie = normalizeMwsCookie(body.cookie);
       if (!cookie) throw new Error("m-wsのCookieは必須です。");
       if (cookie.length > 8192) throw new Error("Cookie値が長すぎます。");
 
