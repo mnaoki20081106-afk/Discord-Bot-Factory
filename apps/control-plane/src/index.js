@@ -722,14 +722,66 @@ async function mwsImportFromGithub(env, cookie, botId, { repository, ref, github
   return mwsJson(env, cookie, `/bots/${botId}/github/import`, {
     method: "POST",
     body: JSON.stringify({
-      repo: repository,
-      branch: ref,
-      token: githubToken,
+      url: `https://github.com/${repository}`,
+      branch: ref || "main",
     }),
   });
 }
 
-async function mwsDeployBot(env, { accountAlias, repository, ref, manifest, githubToken }) {
+// m-ws saves the "環境変数" tab as the bot's .env file (loaded on every start), so the
+// values collected in the Factory form are written there instead of Worker secrets.
+function mwsDotenv(vars) {
+  const lines = Object.entries(vars).map(([key, value]) => {
+    const text = String(value).replace(/\r?\n/g, " ");
+    return /^[A-Za-z0-9_.:\/@+=,~-]*$/.test(text)
+      ? `${key}=${text}`
+      : `${key}="${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  });
+  return lines.join("\n") + "\n";
+}
+
+async function mwsUploadEnv(env, cookie, botId, vars) {
+  const form = new FormData();
+  form.append("file", new File([mwsDotenv(vars)], ".env", { type: "text/plain" }));
+  const response = await fetch(`${mwsBase(env)}/bots/${botId}/upload`, {
+    method: "POST",
+    headers: { cookie, accept: "application/json" },
+    body: form,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body?.detail || `m-wsへの環境変数(.env)の保存に失敗しました (${response.status})`);
+  }
+}
+
+// Same rules as the Cloudflare path: every required field and Discord confirmation must be
+// satisfied before anything is created on m-ws.
+async function collectMwsEnv(env, { manifest, repository, accountAlias, fields, confirmed }) {
+  const setup = normalizeSetup(manifest);
+  const confirmedSet = new Set(Array.isArray(confirmed) ? confirmed.map(String) : []);
+  for (const item of [...setup.discord.intents, ...setup.discord.permissions, ...setup.discord.checks]) {
+    if (item.required && !confirmedSet.has(item.id)) {
+      throw new Error(`Discord設定「${item.label}」の確認が必要です。通常起動から設定を確認してください。`);
+    }
+  }
+  const provided = fields && typeof fields === "object" ? fields : {};
+  const vars = {};
+  const constants = manifest.mws_env && typeof manifest.mws_env === "object" ? manifest.mws_env : {};
+  for (const [key, value] of Object.entries(constants)) {
+    if (!/^[A-Z][A-Z0-9_]*$/.test(key)) throw new Error(`mws_env の key "${key}" は環境変数形式にしてください。`);
+    vars[key] = String(value);
+  }
+  for (const field of setup.fields) {
+    const raw = field.generate
+      ? await getOrCreateManagedValue(env, repository, accountAlias, field)
+      : provided[field.key];
+    const value = validateFieldValue(field, raw);
+    if (field.runtime_env && value !== "") vars[field.key] = value;
+  }
+  return vars;
+}
+
+async function mwsDeployBot(env, { accountAlias, repository, ref, manifest, githubToken, envVars }) {
   const account = await env.DB.prepare(
     "SELECT alias, label, encrypted_cookie FROM mws_accounts WHERE alias = ?",
   ).bind(accountAlias).first();
@@ -757,6 +809,10 @@ async function mwsDeployBot(env, { accountAlias, repository, ref, manifest, gith
     });
   }
 
+  if (envVars && Object.keys(envVars).length) {
+    await mwsUploadEnv(env, cookie, botId, envVars);
+  }
+
   await mwsJson(env, cookie, `/bots/${botId}/start`, { method: "POST" });
 
   return { botId, name, accountLabel: account.label };
@@ -772,6 +828,14 @@ async function createMwsDeployment(env, input) {
 
   const manifest = await fetchManifest(env, github.value, repository, ref);
   if (manifest.provider !== "mws") throw new Error("このBOTはm-ws向けではありません。");
+
+  const envVars = await collectMwsEnv(env, {
+    manifest,
+    repository,
+    accountAlias,
+    fields: input.fields,
+    confirmed: input.confirmed_requirements,
+  });
 
   const id = crypto.randomUUID();
   const createdAt = nowIso();
@@ -789,6 +853,7 @@ async function createMwsDeployment(env, input) {
       ref,
       manifest,
       githubToken: github.value,
+      envVars,
     });
     await env.DB.prepare(
       `UPDATE mws_deployments
@@ -1562,6 +1627,8 @@ async function handleApi(request, env, url) {
           repository: body.repository,
           ref: body.ref,
           account_alias: body.account_alias,
+          fields: body.fields,
+          confirmed_requirements: body.confirmed_requirements,
         });
         return json({ ok: true, deployment });
       }

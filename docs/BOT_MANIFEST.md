@@ -35,8 +35,9 @@ Fields:
 - `mws_language`: one of m-ws's supported runtimes (`python`, `node`, `typescript`, `go`). Defaults to `node`.
 - `mws_region_id` / `mws_template_id`: optional, only used the first time the bot is created on m-ws.
 - `entrypoint`: optional entry file, passed to m-ws's entrypoint setting.
+- `mws_env`: optional object of constant environment variables written to `.env` together with the setup fields.
 
-The operator registers an m-ws account from the **m-ws** tab in the management site by pasting the raw `Cookie` request header captured from a logged-in browser session (m-ws authenticates with a Discord-login session cookie, not an API token, so there is nothing else to register). `setup.fields` / `setup.discord` are not pushed to m-ws (it has its own environment-variable and Discord-requirements UI on its site) — keep them empty or informational for `mws`-provider manifests.
+The operator registers an m-ws account from the **m-ws** tab in the management site by pasting the raw `Cookie` request header captured from a logged-in browser session (m-ws authenticates with a Discord-login session cookie, not an API token, so there is nothing else to register). `setup.fields` are validated exactly like the Cloudflare path (required, pattern, type, Discord confirmations) *before* anything is created on m-ws, and the values are written to the bot's `.env` file on m-ws (uploaded via `/bots/{id}/upload`) before the bot is started. Constant extra variables can be declared with `mws_env` (`{"KEY": "value"}`).
 
 Example:
 
