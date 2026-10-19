@@ -742,13 +742,23 @@ async function mwsExplainFailure(env, { cookie, botId, error, repository, ref, g
         const payload = await response.json();
         const requirements = decodeGitHubContent(payload.content);
         parts.push("【requirements.txt】\n" + requirements.trim());
-        const blockedPackages = await mwsProbeBlockedPackages(env, cookie, botId, requirements);
-        parts.push(
-          "【ブロックされたパッケージ】\n" +
-          (blockedPackages.length
-            ? blockedPackages.join("\n")
-            : "特定できませんでした（1つずつ起動しても拒否されませんでした）"),
+
+        // Preferred: read the live log stream while starting once more.
+        const live = await mwsCollectLiveLogs(env, cookie, botId, () =>
+          mwsJson(env, cookie, `/bots/${botId}/start`, { method: "POST" }),
         );
+        if (live.trim()) {
+          parts.push("【m-wsライブログ】\n" + live.trim());
+        } else {
+          // Fallback: start with one requirement at a time to find the refused one.
+          const blockedPackages = await mwsProbeBlockedPackages(env, cookie, botId, requirements);
+          parts.push(
+            "【ブロックされたパッケージ】\n" +
+            (blockedPackages.length
+              ? blockedPackages.join("\n")
+              : "特定できませんでした（1つずつ起動しても拒否されませんでした）"),
+          );
+        }
         // The probe overwrote requirements.txt on m-ws; put the repository's version back.
         await mwsImportFromGithub(env, cookie, botId, { repository, ref, githubToken }).catch(() => null);
       }
@@ -782,6 +792,35 @@ async function mwsProbeBlockedPackages(env, cookie, botId, requirementsText) {
     }
   }
   return blocked;
+}
+
+// The log tab on the m-ws site is a WebSocket (/ws/logs/{id}) that streams live output; the
+// /logs/download file stays empty when the bot never ran. Listen on it while triggering the
+// action that fails, so the "see the log" message (blocked package name) can be read.
+async function mwsCollectLiveLogs(env, cookie, botId, trigger, waitMs = 5000) {
+  try {
+    const origin = new URL(mwsBase(env)).origin;
+    const response = await fetch(`${origin}/ws/logs/${botId}`, {
+      headers: { Upgrade: "websocket", cookie, origin },
+    });
+    const socket = response.webSocket;
+    if (!socket) return "";
+    socket.accept();
+    const lines = [];
+    socket.addEventListener("message", (event) => {
+      if (typeof event.data === "string") lines.push(event.data);
+    });
+    try {
+      await trigger();
+    } catch {
+      // The trigger is expected to fail; its output is what we want from the stream.
+    }
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    try { socket.close(); } catch { /* already closed */ }
+    return lines.join("\n").replace(/\u001b\[[0-9;]*m/g, "").slice(-3000);
+  } catch {
+    return "";
+  }
 }
 
 async function verifyMwsCookie(env, cookie) {
