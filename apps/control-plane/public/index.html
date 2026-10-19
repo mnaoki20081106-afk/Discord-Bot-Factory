@@ -84,15 +84,15 @@
       <section id="tab-mws" class="tab">
         <div class="page-head"><div><span class="eyebrow">M-WS</span><h1>m-wsアカウント</h1></div></div>
         <div class="card">
-          <h2>セッションCookieを登録</h2>
+          <h2>m-wsにログイン情報を登録</h2>
           <p class="hint">
-            m-wsにはAPIトークンがありません。ブラウザで <code>https://cloud.m-ws.cc</code> にDiscordログインした状態でDevTools &gt;
-            Network を開き、任意のXHRリクエスト（例: <code>auth/me</code>）の Request Headers にある
-            <code>Cookie</code> の値をそのまま貼り付けてください。暗号化してD1へ保存し、画面へ再表示はしません。
+            ブラウザで <code>https://cloud.m-ws.cc</code> にDiscordログインし、Cookieの
+            <code>__Host-mrtcloud_token</code> の<b>値だけ</b>をコピーして貼り付けてください。
+            暗号化してD1へ保存し、画面へ再表示はしません。
           </p>
           <form id="mwsAccountForm" class="grid two">
             <label>表示名<input id="mwsAccountLabel" placeholder="メインアカウント"></label>
-            <label class="full">Cookie<input id="mwsAccountCookie" type="password" autocomplete="off" required placeholder="例: __Secure-session=...; _ga=..."></label>
+            <label class="full">__Host-mrtcloud_token の値<input id="mwsAccountCookie" type="password" autocomplete="off" required placeholder="コピーした値をそのまま貼り付け"></label>
             <div class="full"><button class="primary" type="submit">登録 / 更新</button></div>
           </form>
           <div id="mwsAccountFormState" class="inline-state"></div>
