@@ -981,6 +981,7 @@ async function createMwsDeployment(env, input) {
     fields: input.fields,
     confirmed: input.confirmed_requirements,
   });
+  await saveProfileFromInput(env, repository, accountAlias, manifest, input);
 
   const id = crypto.randomUUID();
   const createdAt = nowIso();
@@ -1125,6 +1126,7 @@ async function createVpsDeployment(env, input) {
     fields: input.fields,
     confirmed: input.confirmed_requirements,
   });
+  await saveProfileFromInput(env, repository, accountAlias, manifest, input);
 
   const botName = normalizeWorkerName(manifest.name || repository.split("/")[1]);
   await cleanupExpiredDeployments(env);
@@ -1341,6 +1343,26 @@ async function saveDeploymentProfile(env, repository, accountAlias, fields, conf
   ).bind(repository, accountAlias, encryptedInputs, nowIso()).run();
 }
 
+// Same shape createDeployment stores for Cloudflare, so every provider can restore it.
+async function saveProfileFromInput(env, repository, accountAlias, manifest, input) {
+  const setup = normalizeSetup(manifest);
+  const provided = input.fields && typeof input.fields === "object" ? input.fields : {};
+  const profileFields = {};
+  for (const field of setup.fields) {
+    if (field.generate) continue;
+    const rawValue = provided[field.key];
+    if (field.type === "boolean") {
+      if (typeof rawValue === "boolean") profileFields[field.key] = rawValue;
+    } else {
+      profileFields[field.key] = rawValue == null ? "" : String(rawValue);
+    }
+  }
+  const confirmed = new Set(
+    Array.isArray(input.confirmed_requirements) ? input.confirmed_requirements.map(String) : [],
+  );
+  await saveDeploymentProfile(env, repository, accountAlias, profileFields, confirmed);
+}
+
 async function loadDeploymentProfile(env, repository, accountAlias) {
   const row = await env.DB.prepare(
     "SELECT encrypted_inputs FROM deployment_profiles WHERE repository = ? AND account_alias = ?",
@@ -1362,12 +1384,18 @@ async function loadDeploymentProfile(env, repository, accountAlias) {
   };
 }
 
-async function loadDeploymentRestoreState(env, deploymentId) {
-  const previous = await env.DB.prepare(
-    `SELECT id, repository, ref, account_alias
-     FROM deployments
-     WHERE id = ?`,
+async function findDeploymentForRestore(env, deploymentId) {
+  const cloudflareOrVps = await env.DB.prepare(
+    "SELECT id, repository, ref, account_alias FROM deployments WHERE id = ?",
   ).bind(deploymentId).first();
+  if (cloudflareOrVps) return cloudflareOrVps;
+  return await env.DB.prepare(
+    "SELECT id, repository, ref, account_alias FROM mws_deployments WHERE id = ?",
+  ).bind(deploymentId).first();
+}
+
+async function loadDeploymentRestoreState(env, deploymentId) {
+  const previous = await findDeploymentForRestore(env, deploymentId);
   if (!previous) throw new Error("起動履歴が見つかりません。");
 
   const profile = await loadDeploymentProfile(env, previous.repository, previous.account_alias);
@@ -1958,8 +1986,11 @@ async function handleApi(request, env, url) {
   }
 
   if (url.pathname === "/api/deployments" && request.method === "GET") {
+    // The UNION is wrapped in a subquery: SQLite rejects ORDER BY on an
+    // unaliased column of a compound SELECT, which emptied the whole history.
     const rows = await env.DB.prepare(
-      `SELECT d.id, d.repository, d.ref, d.worker_name, d.account_alias,
+      `SELECT * FROM (
+       SELECT d.id, d.repository, d.ref, d.worker_name, d.account_alias,
               CASE WHEN v.alias IS NOT NULL THEN 'vps' ELSE 'cloudflare' END AS provider,
               COALESCE(c.label, v.label, '削除済みAccount') AS account_label,
               CASE WHEN p.repository IS NULL THEN 0 ELSE 1 END AS can_restart,
@@ -1982,7 +2013,7 @@ async function handleApi(request, env, url) {
        LEFT JOIN mws_accounts a ON a.alias = m.account_alias
        LEFT JOIN deployment_profiles p
          ON p.repository = m.repository AND p.account_alias = m.account_alias
-       ORDER BY created_at DESC
+       ) ORDER BY created_at DESC
        LIMIT 50`,
     ).all();
     return json({ deployments: rows.results || [] });
@@ -1991,42 +2022,12 @@ async function handleApi(request, env, url) {
   if (url.pathname === "/api/deployments" && request.method === "POST") {
     try {
       const body = await request.json();
-      const mwsAccount = await env.DB.prepare(
-        "SELECT alias FROM mws_accounts WHERE alias = ?",
-      ).bind(String(body.account_alias || "")).first();
-      if (mwsAccount) {
-        const deployment = await createMwsDeployment(env, {
-          repository: body.repository,
-          ref: body.ref,
-          account_alias: body.account_alias,
-          fields: body.fields,
-          confirmed_requirements: body.confirmed_requirements,
-        });
-        return json({ ok: true, deployment });
-      }
-      const vpsAccount = await env.DB.prepare(
-        "SELECT alias FROM vps_accounts WHERE alias = ?",
-      ).bind(String(body.account_alias || "")).first();
-      if (vpsAccount) {
-        const deployment = await createVpsDeployment(env, {
-          repository: body.repository,
-          ref: body.ref,
-          account_alias: body.account_alias,
-          fields: body.fields,
-          confirmed_requirements: body.confirmed_requirements,
-        });
-        return json({ ok: true, deployment });
-      }
       let fields = body.fields && typeof body.fields === "object" ? body.fields : {};
       let restartOf = null;
 
       if (body.restore_from_deployment_id) {
         const restoreId = String(body.restore_from_deployment_id);
-        const previous = await env.DB.prepare(
-          `SELECT id, repository, account_alias
-           FROM deployments
-           WHERE id = ?`,
-        ).bind(restoreId).first();
+        const previous = await findDeploymentForRestore(env, restoreId);
         if (!previous) throw new Error("復元元の起動履歴が見つかりません。");
         if (previous.repository !== String(body.repository || "") ||
             previous.account_alias !== String(body.account_alias || "")) {
@@ -2039,6 +2040,32 @@ async function handleApi(request, env, url) {
         restartOf = previous.id;
       }
 
+      const mwsAccount = await env.DB.prepare(
+        "SELECT alias FROM mws_accounts WHERE alias = ?",
+      ).bind(String(body.account_alias || "")).first();
+      if (mwsAccount) {
+        const deployment = await createMwsDeployment(env, {
+          repository: body.repository,
+          ref: body.ref,
+          account_alias: body.account_alias,
+          fields,
+          confirmed_requirements: body.confirmed_requirements,
+        });
+        return json({ ok: true, deployment });
+      }
+      const vpsAccount = await env.DB.prepare(
+        "SELECT alias FROM vps_accounts WHERE alias = ?",
+      ).bind(String(body.account_alias || "")).first();
+      if (vpsAccount) {
+        const deployment = await createVpsDeployment(env, {
+          repository: body.repository,
+          ref: body.ref,
+          account_alias: body.account_alias,
+          fields,
+          confirmed_requirements: body.confirmed_requirements,
+        });
+        return json({ ok: true, deployment });
+      }
       const deployment = await createDeployment(env, {
         repository: body.repository,
         ref: body.ref,
