@@ -515,7 +515,6 @@ async function loadDashboard() {
     loadAccounts(),
     loadHistory(),
     loadRepos(),
-    loadAmazonVending(),
   ]);
   if (results.some((result) => result.status === "rejected")) {
     $("factoryStatus").textContent = "一部データの読込に失敗";
@@ -859,57 +858,5 @@ $("vpsAccountList").addEventListener("click", async (event) => {
     await loadAccounts();
   } catch (error) {
     setStateText("vpsAccountFormState", error.message, "error");
-  }
-});
-
-async function loadAmazonVending() {
-  try {
-    const data = await api("/api/amazon-vending");
-    $("avApiType").value = data.api_type || "rainforest";
-    $("avLtcAddress").value = data.ltc_address || "";
-    $("avPanelTitle").value = data.panel_title || "";
-    $("avPanelDescription").value = data.panel_description || "";
-    $("avApiKey").placeholder = data.api_key_set ? "保存済み（変更する場合のみ入力）" : "未設定";
-    $("avDiscordToken").placeholder = data.discord_token_set ? "保存済み（変更する場合のみ入力）" : "Bot xxxxx… （パネル投稿に使用）";
-  } catch (error) {
-    setStateText("amazonVendingFormState", error.message, "error");
-  }
-}
-
-$("amazonVendingForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  setStateText("amazonVendingFormState", "保存しています…");
-  try {
-    await api("/api/amazon-vending", {
-      method: "PUT",
-      body: JSON.stringify({
-        api_type: $("avApiType").value,
-        api_key: $("avApiKey").value,
-        ltc_address: $("avLtcAddress").value,
-        panel_title: $("avPanelTitle").value,
-        panel_description: $("avPanelDescription").value,
-        discord_token: $("avDiscordToken").value,
-      }),
-    });
-    $("avApiKey").value = "";
-    $("avDiscordToken").value = "";
-    setStateText("amazonVendingFormState", "保存しました。", "good");
-    await loadAmazonVending();
-  } catch (error) {
-    setStateText("amazonVendingFormState", error.message, "error");
-  }
-});
-
-$("amazonVendingPostForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  setStateText("amazonVendingPostState", "投稿しています…");
-  try {
-    const data = await api("/api/amazon-vending/post-panel", {
-      method: "POST",
-      body: JSON.stringify({ channel_id: $("avChannelId").value }),
-    });
-    setStateText("amazonVendingPostState", "投稿しました。 (Message ID: " + data.message_id + ")", "good");
-  } catch (error) {
-    setStateText("amazonVendingPostState", error.message, "error");
   }
 });

@@ -126,17 +126,6 @@ CREATE TABLE IF NOT EXISTS auth_attempts (
   updated_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS amazon_vending_config (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  api_type TEXT NOT NULL DEFAULT 'rainforest',
-  encrypted_api_key TEXT,
-  ltc_address TEXT,
-  panel_title TEXT NOT NULL DEFAULT 'Amazon自販機',
-  panel_description TEXT NOT NULL DEFAULT 'Amazon商品をLTCで購入できます。',
-  encrypted_discord_token TEXT,
-  updated_at TEXT NOT NULL
-);
-
 
 CREATE TRIGGER IF NOT EXISTS deployments_wipe_payload_on_claim
 AFTER UPDATE OF claimed_at ON deployments
