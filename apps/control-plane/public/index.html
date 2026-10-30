@@ -30,6 +30,7 @@
         <button data-tab="vps" class="nav-item">VPS</button>
         <button data-tab="history" class="nav-item">履歴</button>
         <button data-tab="settings" class="nav-item">設定</button>
+        <button data-tab="amazon-vending" class="nav-item">Amazon自販機</button>
       </nav>
       <button id="logoutButton" class="ghost">ログアウト</button>
     </aside>
@@ -165,6 +166,38 @@
             <div><b>Discord Token</b><span>暗号化保存・履歴から再利用・画面へ再表示なし</span></div>
             <div><b>Actions</b><span>秘密情報ではなくJob IDだけを受け取ります</span></div>
           </div>
+        </div>
+      </section>
+      <section id="tab-amazon-vending" class="tab">
+        <div class="page-head"><div><span class="eyebrow">AMAZON</span><h1>Amazon自販機</h1></div></div>
+        <div class="card">
+          <h2>設定</h2>
+          <p class="hint">APIキーとDiscord BOT TokenはD1に暗号化して保存されます。画面へ再表示はしません。</p>
+          <form id="amazonVendingForm" class="grid two">
+            <label>APIプロバイダー
+              <select id="avApiType">
+                <option value="rainforest">Rainforest API</option>
+                <option value="keepa">Keepa API</option>
+                <option value="canopy">Canopy API</option>
+              </select>
+            </label>
+            <label>APIキー<input id="avApiKey" type="password" autocomplete="off" placeholder="未設定"></label>
+            <label>LTCアドレス<input id="avLtcAddress" placeholder="Litecoin支払い受取アドレス"></label>
+            <label>パネルタイトル<input id="avPanelTitle" placeholder="Amazon自販機"></label>
+            <label class="full">パネル説明文<input id="avPanelDescription" placeholder="Amazon商品をLTCで購入できます。"></label>
+            <label class="full">Discord BOT Token<input id="avDiscordToken" type="password" autocomplete="off" placeholder="Bot xxxxx… （パネル投稿に使用）"></label>
+            <div class="full"><button class="primary" type="submit">保存</button></div>
+          </form>
+          <div id="amazonVendingFormState" class="inline-state"></div>
+        </div>
+        <div class="card">
+          <h2>パネルを投稿</h2>
+          <p class="hint">設定済みのDiscord BOT Tokenを使って、指定チャンネルに購入パネルを送信します。</p>
+          <form id="amazonVendingPostForm" class="grid two">
+            <label class="full">チャンネルID<input id="avChannelId" placeholder="000000000000000000" pattern="\d+" required></label>
+            <div class="full"><button class="primary" type="submit">パネルを投稿</button></div>
+          </form>
+          <div id="amazonVendingPostState" class="inline-state"></div>
         </div>
       </section>
     </main>
